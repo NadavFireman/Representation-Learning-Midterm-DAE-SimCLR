@@ -1,5 +1,4 @@
 import csv
-import json
 import os
 import torch
 import pytorch_lightning as pl
@@ -40,12 +39,11 @@ def run(mode):
         num_epochs = config.TARGET_NUM_EPOCHS
 
     # This run's own config file: every value of config.py as this run used it
-    # (after the command-line overrides), next to its logs.
-    os.makedirs(logger.log_dir, exist_ok=True)
+    # (after the command-line overrides). Lightning's log_hyperparams writes it to
+    # hparams.yaml next to the logs, and to the HPARAMS tab of TensorBoard.
     settings = {name: getattr(config, name) for name in dir(config) if name.isupper()}
     settings.update(MODE=mode, RUN_NUM_EPOCHS=num_epochs, RUN_LABEL_FRACTION=label_fraction)
-    with open(os.path.join(logger.log_dir, "config.json"), "w") as f:
-        json.dump(settings, f, indent=2, default=str)
+    logger.log_hyperparams(settings)
 
     dm = ImageDataModule(
         data_dir=config.DATA_DIR,
@@ -67,6 +65,8 @@ def run(mode):
         results = {"val_knn_top1": val_top1, "val_knn_top5": val_top5}
         if not config.SEARCH:
             results["test_knn_top1"], results["test_knn_top5"] = knn_evaluate(model.encoder, dm, config.KNN_K, "test")
+        logger.log_metrics(results)
+        logger.save()  # writes hparams.yaml (no Trainer here to do it)
         return results
 
     callbacks = [MyPrintingCallback(), ColabProgressBar(refresh_rate=20), EpochMetricsCallback()]
@@ -109,10 +109,9 @@ def run(mode):
         details += " (search trial: proxy setting, no test)"
     print(details)
 
-    last_ckpt = os.path.join(checkpoint_dir, "last.ckpt")
-    if os.path.exists(last_ckpt):
-        print(f"Continuing from {last_ckpt}")
-    trainer.fit(model, dm, ckpt_path=last_ckpt if os.path.exists(last_ckpt) else None)
+    # ckpt_path="last": Lightning continues from this run's last.ckpt if it exists
+    # (after a disconnect), and starts from scratch if it does not.
+    trainer.fit(model, dm, ckpt_path="last")
     # Validate (and test) the kept checkpoint, not the last epoch. This also loads
     # its weights into model, so the encoder saved below is the kept one.
     val_results = trainer.validate(model, dm, ckpt_path="best")

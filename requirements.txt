@@ -3,3 +3,4 @@ torchmetrics
 tensorboard
 matplotlib
 datasets
+scikit-learn

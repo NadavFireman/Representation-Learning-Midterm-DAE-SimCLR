@@ -4,43 +4,20 @@ import pytorch_lightning as pl
 import torchmetrics
 import torchvision
 
-# Per-channel mean and std of the Tiny-ImageNet train split (90,000 images, val and
-# test not included), on pixels in [0, 1]. Computed once with datamodule.py.
-TINY_IMAGENET_MEAN = (0.4804, 0.4482, 0.3976)
-TINY_IMAGENET_STD = (0.2764, 0.2688, 0.2816)
-
-
-class Normalize(nn.Module):
-    """(x - mean) / std per channel, as the first layer of the encoder.
-
-    The course code normalized in the transforms. Here the data stays in [0, 1],
-    because the decoder ends in a Sigmoid and its clean target must be in [0, 1].
-    The encoder still gets centered input, because it normalizes by itself.
-    mean and std are buffers, not parameters: they are saved in the encoder's
-    state_dict, but the optimizer never changes them. So a saved encoder
-    normalizes the same way in k-NN, the linear probe and fine-tuning.
-    """
-
-    def __init__(self, mean, std):
-        super().__init__()
-        self.register_buffer("mean", torch.tensor(mean).view(1, 3, 1, 1))  # [1, 3, 1, 1], broadcasts over [B, 3, 64, 64]
-        self.register_buffer("std", torch.tensor(std).view(1, 3, 1, 1))
-
-    def forward(self, x):
-        return (x - self.mean) / self.std  # [B, 3, 64, 64] -> [B, 3, 64, 64]
-
+from augmentations import TINY_IMAGENET_MEAN, TINY_IMAGENET_STD
 
 def build_encoder(latent_dim):
     """The encoder f_theta: [B, 3, 64, 64] -> h [B, latent_dim].
 
-    The lec3 encoder, for 3x64x64 images instead of 1x28x28. Two stride-2
-    convolutions halve the image twice (64 -> 32 -> 16), so the Linear layer reads
-    64*16*16 numbers instead of 64*7*7. The course wrote these layers out again in
-    every class. Here one function builds them, so every model is sure to get the
-    same encoder, and a saved state_dict loads into any of them.
+    The small encoder of the lec4 SimCLR class (the assignment's backbone), for
+    3x64x64 images instead of 1x28x28. Two stride-2 convolutions halve the image
+    twice (64 -> 32 -> 16), so the Linear layer reads 64*16*16 numbers instead of
+    64*7*7. The input is already normalized by the transforms, as in the course.
+    The course wrote these layers out again in every class. Here one function
+    builds them, so every model is sure to get the same encoder, and a saved
+    state_dict loads into any of them.
     """
     return nn.Sequential(
-        Normalize(TINY_IMAGENET_MEAN, TINY_IMAGENET_STD),  # [B, 3, 64, 64] -> [B, 3, 64, 64], centered
         nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),  # [B, 3, 64, 64] -> [B, 32, 32, 32]
         nn.ReLU(),  # [B, 32, 32, 32] -> [B, 32, 32, 32]
         nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # [B, 32, 32, 32] -> [B, 64, 16, 16]
@@ -53,17 +30,20 @@ def build_encoder(latent_dim):
 class DenoisingAutoEncoder(pl.LightningModule):
     """Denoising autoencoder: corrupted image in, clean image out.
 
-    The lec3 AutoEncoder with one change in the loss. The input is corrupted,
+    The course AutoEncoder (lec5) with one change in the loss. The input is corrupted,
     and the loss is MSE between the reconstruction and the clean image. To undo
     the corruption, the encoder has to keep what the image shows and drop the
     noise, and that is the representation h we want. No skip connections (not
     a U-Net): everything passes through h.
 
-    noise_type, the three corruptions the assignment lists for a DAE:
-        "gaussian":    x + noise_level * N(0, 1), clipped to [0, 1]
-        "mask":        a noise_level fraction of the pixels is set to 0 (all 3 channels)
-        "salt_pepper": a noise_level fraction of the pixels is set to 0 or 1, half each
-    noise_level=0 changes nothing, which is the plain autoencoder of lec3.
+    The images come normalized from the transforms, as in the course, so the noise
+    works on normalized pixels. noise_type, the three corruptions the assignment
+    lists for a DAE:
+        "gaussian":    x + noise_level * N(0, 1), in units of the per-channel std
+        "mask":        a noise_level fraction of the pixels is set to 0, which after
+                       normalization is the mean color (all 3 channels)
+        "salt_pepper": a noise_level fraction of the pixels is set to black or white, half each
+    noise_level=0 changes nothing, which is the plain autoencoder of the course.
     That is the AE baseline, with no separate class.
 
     The noise is added here and not in the transforms, because the loss needs
@@ -72,9 +52,10 @@ class DenoisingAutoEncoder(pl.LightningModule):
     batch i always comes from seed i, so every epoch and every trial is scored
     on the same corrupted images and their reconstruction errors can be compared.
 
-    The decoder mirrors the encoder (16 -> 32 -> 64) and ends in a Sigmoid, so
-    every pixel is in (0, 1), the range of the clean image. After pretraining
-    only the encoder is kept.
+    The decoder mirrors the encoder (16 -> 32 -> 64). As in the course AutoEncoder,
+    the last layer has no activation: the clean target is normalized, so its pixels
+    run from about -1.7 to 2.1, and a Sigmoid, (0, 1), could never match them.
+    After pretraining only the encoder is kept.
     """
 
     def __init__(self, learning_rate, latent_dim, noise_type, noise_level):
@@ -83,6 +64,12 @@ class DenoisingAutoEncoder(pl.LightningModule):
         self.lr = learning_rate
         self.noise_type = noise_type
         self.noise_level = noise_level
+        # Black (pixel 0) and white (pixel 1) after normalization, per channel, for salt_pepper.
+        # Buffers: they move to the GPU with the model, and the optimizer never changes them.
+        mean = torch.tensor(TINY_IMAGENET_MEAN).view(1, 3, 1, 1)
+        std = torch.tensor(TINY_IMAGENET_STD).view(1, 3, 1, 1)
+        self.register_buffer("black", (0 - mean) / std)  # [1, 3, 1, 1]
+        self.register_buffer("white", (1 - mean) / std)
 
         self.encoder = build_encoder(latent_dim)
         self.decoder = nn.Sequential(
@@ -91,8 +78,7 @@ class DenoisingAutoEncoder(pl.LightningModule):
             nn.Unflatten(1, (64, 16, 16)),  # [B, 16384] -> [B, 64, 16, 16]
             nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, 64, 16, 16] -> [B, 32, 32, 32]
             nn.ReLU(),  # [B, 32, 32, 32] -> [B, 32, 32, 32]
-            nn.ConvTranspose2d(32, 3, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, 32, 32, 32] -> [B, 3, 64, 64]
-            nn.Sigmoid(),  # [B, 3, 64, 64] -> [B, 3, 64, 64], values in (0, 1)
+            nn.ConvTranspose2d(32, 3, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, 32, 32, 32] -> [B, 3, 64, 64], same scale as the normalized input
         )
         self.loss_fn = nn.MSELoss()
 
@@ -101,21 +87,21 @@ class DenoisingAutoEncoder(pl.LightningModule):
         return self.decoder(h)  # [B, latent_dim] -> [B, 3, 64, 64]
 
     def add_noise(self, x, generator=None):
-        """Corrupt x [B, 3, 64, 64] in [0, 1]; the result is still an image in [0, 1].
+        """Corrupt the normalized images x [B, 3, 64, 64].
 
         generator=None draws new noise every call (training). A seeded generator
         gives the same noise every time (val and test).
         """
         if self.noise_type == "gaussian":
             noise = torch.randn(x.shape, generator=generator, device=x.device, dtype=x.dtype)
-            return (x + self.noise_level * noise).clamp(0, 1)
+            return x + self.noise_level * noise
         # mask and salt_pepper pick whole pixels: one random number per pixel, shared by the 3 channels
         r = torch.rand((x.size(0), 1, x.size(2), x.size(3)), generator=generator, device=x.device, dtype=x.dtype)  # [B, 1, 64, 64]
         if self.noise_type == "mask":
-            return x * (r >= self.noise_level)  # a noise_level fraction of the pixels -> 0
+            return x * (r >= self.noise_level)  # a noise_level fraction of the pixels -> 0, the mean color
         if self.noise_type == "salt_pepper":
-            x = torch.where(r < self.noise_level / 2, torch.zeros_like(x), x)  # pepper: -> 0
-            return torch.where(r > 1 - self.noise_level / 2, torch.ones_like(x), x)  # salt: -> 1
+            x = torch.where(r < self.noise_level / 2, self.black, x)  # pepper: -> black
+            return torch.where(r > 1 - self.noise_level / 2, self.white, x)  # salt: -> white
         raise ValueError(f"unknown noise_type: {self.noise_type}")
 
     def _fixed_generator(self, batch_idx):
@@ -156,7 +142,7 @@ class DenoisingAutoEncoder(pl.LightningModule):
             return
         n = min(8, x.size(0))
         images = torch.cat([x[:n], x_noisy[:n], recon[:n]]).detach().float().cpu()
-        grid = torchvision.utils.make_grid(images, nrow=n)
+        grid = torchvision.utils.make_grid(images, nrow=n, normalize=True)  # normalize=True: rescaled to [0, 1] for display
         self.logger.experiment.add_image(tag, grid, self.global_step)
 
     def configure_optimizers(self):
@@ -227,7 +213,7 @@ class EncoderClassifier(pl.LightningModule):
         )
         x, y = batch
         if batch_idx % 100 == 0 and self.logger is not None:
-            grid = torchvision.utils.make_grid(x[:8])  # [8, 3, 64, 64], already in [0, 1]
+            grid = torchvision.utils.make_grid(x[:8], normalize=True)  # [8, 3, 64, 64], rescaled to [0, 1] for display
             self.logger.experiment.add_image("train_images", grid, self.global_step)
         return {"loss": loss, "scores": scores, "y": y}
 

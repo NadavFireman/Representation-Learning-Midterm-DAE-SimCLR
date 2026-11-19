@@ -71,10 +71,11 @@ class KNNCallback(Callback):
     training split; bank_size=None uses all of it (see config.KNN_BANK_SIZE).
     """
 
-    def __init__(self, k=config.KNN_K, bank_size=config.KNN_BANK_SIZE):
+    def __init__(self, k=None, bank_size=None):
         super().__init__()
-        self.k = k
-        self.bank_size = bank_size
+        # Read config here, when the callback is created, not when this file is imported.
+        self.k = k if k is not None else config.KNN_K
+        self.bank_size = bank_size if bank_size is not None else config.KNN_BANK_SIZE
 
     def _log_knn(self, trainer, pl_module, split):
         top1, top5 = knn_evaluate(pl_module.encoder, trainer.datamodule, self.k, split, self.bank_size)
