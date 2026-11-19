@@ -1,5 +1,5 @@
-import csv
 import os
+import pandas as pd
 import torch
 import pytorch_lightning as pl
 from datamodule import ImageDataModule
@@ -20,11 +20,11 @@ def run(mode):
     # find its own last.ckpt and continue. To train a run again from scratch,
     # delete its folder.
     encoder_name = os.path.basename(config.ENCODER_PATH)[:-3] if config.ENCODER_PATH else f"random_s{config.TRAIN_SEED}"
-    run_name = f"{mode}_{encoder_name}"
+    run_name = f"{mode}_{encoder_name}"  # a search trial: encoder_name already ends with "_search"
     if mode != "pretrain":
         run_name += f"_{config.DATASET}_{config.LABEL_FRACTION}"
-    if config.SEARCH:
-        run_name += "_search"
+    if config.SEARCH and config.ENCODER_PATH is None:
+        run_name += "_search"  # random-init encoder: no file name to carry it
     logger = TensorBoardLogger(os.path.join(config.OUTPUT_DIR, "tb_logs"), name="", version=run_name, default_hp_metric=False)
     model = build_model(mode)
 
@@ -130,18 +130,11 @@ def run(mode):
             row["seed"] = config.TRAIN_SEED
             row.update({key: val_results[0][key] for key in ("val_loss", "val_knn_top1", "val_knn_top5")})
             sweep_results = os.path.join(config.OUTPUT_DIR, "sweep_results.csv")
-            new_file = not os.path.exists(sweep_results)
-            if not new_file:
-                # A finished trial that is run again (it only reloads last.ckpt) is not added twice.
-                with open(sweep_results, newline="") as f:
-                    key = [str(row[name]) for name in list(row)[:len(config.SWEEP) + 1]]  # hyperparameters + seed
-                    if any([r[name] for name in list(row)[:len(key)]] == key for r in csv.DictReader(f)):
-                        return val_results[0]
-            with open(sweep_results, "a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=list(row))
-                if new_file:
-                    writer.writeheader()
-                writer.writerow(row)
+            rows = pd.DataFrame([row])
+            if os.path.exists(sweep_results):
+                rows = pd.concat([pd.read_csv(sweep_results), rows])
+            # A trial that is run again (it only reloads last.ckpt) replaces its old row: one row per trial.
+            rows.drop_duplicates(subset=[*config.SWEEP, "seed"], keep="last").to_csv(sweep_results, index=False)
         return val_results[0]
 
     results = trainer.test(model, dm, ckpt_path="best")

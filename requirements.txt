@@ -4,3 +4,4 @@ tensorboard
 matplotlib
 datasets
 scikit-learn
+pandas

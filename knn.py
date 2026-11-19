@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from torchmetrics.functional import accuracy
 
 
 @torch.no_grad()
@@ -31,8 +32,11 @@ def knn_scores(train_h, train_y, query_h, num_classes, k=20, chunk=500):
       - similarity-weighted vote (the notebook used a plain majority, .mode()):
         each of the k neighbors adds its cosine similarity to the score of its
         own class, so a close neighbor counts more than a far one.
-    The queries go in chunks of 500, so the [chunk, N_train] similarity matrix
-    stays small (500 x 90,000 floats = 180 MB).
+    Only torch built-ins: F.normalize, a matrix product, topk and scatter_add_.
+    scikit-learn's KNeighborsClassifier gives the same scores, but with
+    metric="cosine" it can't use its search trees and sorts each row in numpy,
+    about 8x slower on 90,000 x 10,000. The queries go in chunks of 500, so the
+    [chunk, N_train] similarity matrix stays small (500 x 90,000 floats = 180 MB).
     """
     train_h, query_h = F.normalize(train_h, dim=1), F.normalize(query_h, dim=1)  # length 1: dot product = cosine
     scores = []
@@ -46,10 +50,13 @@ def knn_scores(train_h, train_y, query_h, num_classes, k=20, chunk=500):
 
 
 def knn_accuracy(train_h, train_y, query_h, query_y, num_classes, k=20):
-    """k-NN top-1 and top-5 accuracy of the queries. No training is involved."""
-    scores = knn_scores(train_h, train_y, query_h, num_classes, k)
-    top1 = (scores.argmax(dim=1) == query_y).float().mean().item()
-    top5 = (scores.topk(5, dim=1).indices == query_y[:, None]).any(dim=1).float().mean().item()
+    """k-NN top-1 and top-5 accuracy of the queries. No training is involved.
+
+    torchmetrics turns the vote scores into top-1 and top-5 accuracy, as in EncoderClassifier.
+    """
+    scores = knn_scores(train_h, train_y, query_h, num_classes, k)  # [N_query, num_classes]
+    top1 = accuracy(scores, query_y, task="multiclass", num_classes=num_classes, top_k=1).item()
+    top5 = accuracy(scores, query_y, task="multiclass", num_classes=num_classes, top_k=5).item()
     return top1, top5
 
 

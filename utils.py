@@ -34,14 +34,19 @@ def encoder_path(encoder, pretrain_dataset):
     Here every encoder keeps its own file: the dataset it was trained on, its
     hyperparameters and its training seed are all in the name, so a CIFAR-100
     baseline or a second seed never overwrites a Tiny-ImageNet encoder.
+    A search trial (--search, proxy setting) gets "_search" in the name, like its
+    log folder in train.py, so it never overwrites the full run of the same
+    hyperparameters.
     """
     if encoder == "random":
         return None
     if encoder == "supervised":
-        name = f"supervised_{pretrain_dataset}_{config.LATENT_DIM}_{config.LABEL_FRACTION}_s{config.TRAIN_SEED}.pt"
+        name = f"supervised_{pretrain_dataset}_{config.LATENT_DIM}_{config.LABEL_FRACTION}_s{config.TRAIN_SEED}"
     else:
-        name = f"dae_{pretrain_dataset}_{config.NOISE_TYPE}_{config.NOISE_LEVEL}_{config.LATENT_DIM}_s{config.TRAIN_SEED}.pt"
-    return os.path.join(config.OUTPUT_DIR, "encoders", name)
+        name = f"dae_{pretrain_dataset}_{config.NOISE_TYPE}_{config.NOISE_LEVEL}_{config.LATENT_DIM}_s{config.TRAIN_SEED}"
+    if config.SEARCH:
+        name += "_search"
+    return os.path.join(config.OUTPUT_DIR, "encoders", name + ".pt")
 
 
 def parse_args():

@@ -76,8 +76,7 @@ class ImageDataModule(pl.LightningDataModule):
             train = TinyImageNetSplit(ds["train"], train_transform)  # 100,000 images
             train_eval = TinyImageNetSplit(ds["train"], eval_transform)
             test = TinyImageNetSplit(ds["valid"], eval_transform)  # 10,000 images, the official val set
-            # Read the label column straight from the Arrow table: fast, and no image is decoded.
-            labels = np.array(ds["train"].data.column("label").to_pylist())
+            labels = np.array(ds["train"]["label"])  # only the label column is read: no image is decoded
         else:
             train = datasets.CIFAR100(self.data_dir, train=True, transform=train_transform)  # 50,000 images, 32x32
             train_eval = datasets.CIFAR100(self.data_dir, train=True, transform=eval_transform)

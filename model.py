@@ -60,10 +60,7 @@ class DenoisingAutoEncoder(pl.LightningModule):
 
     def __init__(self, learning_rate, latent_dim, noise_type, noise_level):
         super().__init__()
-        self.save_hyperparameters()
-        self.lr = learning_rate
-        self.noise_type = noise_type
-        self.noise_level = noise_level
+        self.save_hyperparameters()  # learning_rate, latent_dim, noise_type, noise_level -> self.hparams
         # Black (pixel 0) and white (pixel 1) after normalization, per channel, for salt_pepper.
         # Buffers: they move to the GPU with the model, and the optimizer never changes them.
         mean = torch.tensor(TINY_IMAGENET_MEAN).view(1, 3, 1, 1)
@@ -92,17 +89,18 @@ class DenoisingAutoEncoder(pl.LightningModule):
         generator=None draws new noise every call (training). A seeded generator
         gives the same noise every time (val and test).
         """
-        if self.noise_type == "gaussian":
+        noise_type, noise_level = self.hparams.noise_type, self.hparams.noise_level
+        if noise_type == "gaussian":
             noise = torch.randn(x.shape, generator=generator, device=x.device, dtype=x.dtype)
-            return x + self.noise_level * noise
+            return x + noise_level * noise
         # mask and salt_pepper pick whole pixels: one random number per pixel, shared by the 3 channels
         r = torch.rand((x.size(0), 1, x.size(2), x.size(3)), generator=generator, device=x.device, dtype=x.dtype)  # [B, 1, 64, 64]
-        if self.noise_type == "mask":
-            return x * (r >= self.noise_level)  # a noise_level fraction of the pixels -> 0, the mean color
-        if self.noise_type == "salt_pepper":
-            x = torch.where(r < self.noise_level / 2, self.black, x)  # pepper: -> black
-            return torch.where(r > 1 - self.noise_level / 2, self.white, x)  # salt: -> white
-        raise ValueError(f"unknown noise_type: {self.noise_type}")
+        if noise_type == "mask":
+            return x * (r >= noise_level)  # a noise_level fraction of the pixels -> 0, the mean color
+        if noise_type == "salt_pepper":
+            x = torch.where(r < noise_level / 2, self.black, x)  # pepper: -> black
+            return torch.where(r > 1 - noise_level / 2, self.white, x)  # salt: -> white
+        raise ValueError(f"unknown noise_type: {noise_type}")
 
     def _fixed_generator(self, batch_idx):
         """The same noise for batch batch_idx in every epoch and every trial."""
@@ -146,7 +144,7 @@ class DenoisingAutoEncoder(pl.LightningModule):
         self.logger.experiment.add_image(tag, grid, self.global_step)
 
     def configure_optimizers(self):
-        return optim.Adam(self.parameters(), lr=self.lr)
+        return optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
 
 
 class EncoderClassifier(pl.LightningModule):
@@ -162,9 +160,7 @@ class EncoderClassifier(pl.LightningModule):
 
     def __init__(self, learning_rate, num_classes, latent_dim, encoder_path=None, freeze_encoder=False):
         super().__init__()
-        self.save_hyperparameters()
-        self.lr = learning_rate
-        self.freeze_encoder = freeze_encoder
+        self.save_hyperparameters()  # learning_rate, freeze_encoder, ... -> self.hparams
 
         self.encoder = build_encoder(latent_dim)
         if encoder_path is not None:
@@ -177,7 +173,7 @@ class EncoderClassifier(pl.LightningModule):
         # eval() before freezing: a frozen encoder must not update BatchNorm stats
         # or dropout. train() below keeps that, because Lightning calls train()
         # at the start of every epoch and would otherwise undo it.
-        if self.freeze_encoder:
+        if freeze_encoder:
             self.encoder.eval()
             for p in self.encoder.parameters():
                 p.requires_grad = False
@@ -185,11 +181,10 @@ class EncoderClassifier(pl.LightningModule):
         self.loss_fn = nn.CrossEntropyLoss()
         self.accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
         self.top5_accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes, top_k=5)
-        self.f1_score = torchmetrics.F1Score(task="multiclass", num_classes=num_classes)
 
     def train(self, mode=True):
         super().train(mode)
-        if self.freeze_encoder:
+        if self.hparams.freeze_encoder:
             self.encoder.eval()
         return self
 
@@ -200,22 +195,11 @@ class EncoderClassifier(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         loss, scores, y = self._common_step(batch, batch_idx)
         accuracy = self.accuracy(scores, y)
-        f1_score = self.f1_score(scores, y)
         self.log_dict(
-            {
-                "train_loss": loss,
-                "train_accuracy": accuracy,
-                "train_f1_score": f1_score,
-            },
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
+            {"train_loss": loss, "train_accuracy": accuracy},
+            on_step=True, on_epoch=True, prog_bar=True,
         )
-        x, y = batch
-        if batch_idx % 100 == 0 and self.logger is not None:
-            grid = torchvision.utils.make_grid(x[:8], normalize=True)  # [8, 3, 64, 64], rescaled to [0, 1] for display
-            self.logger.experiment.add_image("train_images", grid, self.global_step)
-        return {"loss": loss, "scores": scores, "y": y}
+        return loss
 
     def validation_step(self, batch, batch_idx):
         loss, scores, y = self._common_step(batch, batch_idx)
@@ -243,16 +227,10 @@ class EncoderClassifier(pl.LightningModule):
         loss = self.loss_fn(outputs, y)
         return loss, outputs, y
 
-    def predict_step(self, batch, batch_idx):
-        x, y = batch
-        scores = self.forward(x)
-        preds = torch.argmax(scores, dim=1)
-        return preds
-
     def configure_optimizers(self):
         # Linear probing: only the head is trainable, so only the head is optimized.
         params = [p for p in self.parameters() if p.requires_grad]
-        return optim.Adam(params, lr=self.lr)
+        return optim.Adam(params, lr=self.hparams.learning_rate)
 
 
 class SupervisedEncoder(EncoderClassifier):
