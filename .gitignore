@@ -1,0 +1,17 @@
+# The assignment: "Do not commit datasets or checkpoints."
+
+# Data: Tiny-ImageNet (Hugging Face cache) and CIFAR-100, downloaded by datamodule.py
+dataset/
+
+# Run outputs: logs, checkpoints, saved encoders, search results
+tb_logs/
+lightning_logs/
+encoders/
+*.ckpt
+*.pt
+sweep_results*.csv
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

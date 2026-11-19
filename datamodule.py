@@ -1,0 +1,197 @@
+import math
+
+import torch
+import torchvision.datasets as datasets
+from torch.utils.data import DataLoader, Dataset, Subset
+import pytorch_lightning as pl
+from datasets import load_dataset
+
+from augmentations import build_transforms
+
+# Number of classes in each dataset. EncoderClassifier needs it for its head.
+NUM_CLASSES = {"TinyImageNet": 200, "CIFAR100": 100}
+
+
+class TinyImageNetSplit(Dataset):
+    """One Hugging Face split of zh-plus/tiny-imagenet, read as (PIL image, label).
+
+    A few Tiny-ImageNet images are grayscale. convert("RGB") copies the one
+    channel three times, so every image has 3 channels.
+    """
+
+    def __init__(self, hf_split):
+        self.hf_split = hf_split
+
+    def __len__(self):
+        return len(self.hf_split)
+
+    def __getitem__(self, idx):
+        item = self.hf_split[idx]
+        return item["image"].convert("RGB"), item["label"]
+
+
+class TransformedSubset(Dataset):
+    """The images at `indices` of `base`, with `transform` applied to each image.
+
+    The course code used two copies of the dataset plus random_split, because
+    the subsets of random_split share one dataset and cannot hold different
+    transforms. Here each split is its own TransformedSubset, so train,
+    val and test can each have their own transform.
+    """
+
+    def __init__(self, base, indices, transform):
+        self.base = base
+        self.indices = list(indices)
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, i):
+        image, label = self.base[self.indices[i]]
+        return self.transform(image), label  # [3, 64, 64], int
+
+
+def split_per_class(labels, n_val_per_class, seed):
+    """Hold out n_val_per_class images of every class as validation.
+
+    Returns (train_indices, val_indices). Every class gets its own random order
+    from one fixed seed, so every experiment gets the same split.
+    """
+    generator = torch.Generator().manual_seed(seed)
+    train_idx, val_idx = [], []
+    for c in labels.unique().tolist():
+        idx = (labels == c).nonzero().flatten()  # all images of class c
+        idx = idx[torch.randperm(len(idx), generator=generator)]
+        val_idx += idx[:n_val_per_class].tolist()
+        train_idx += idx[n_val_per_class:].tolist()
+    return sorted(train_idx), sorted(val_idx)
+
+
+def balanced_subset(indices, labels, fraction, seed):
+    """Keep `fraction` of the images of every class (class-balanced labeled subset).
+
+    The order inside each class comes from a fixed seed and does not depend on
+    the fraction, so the 1% subset is inside the 10% subset, which is inside
+    100%. Every model gets the same images for the same fraction.
+    """
+    if fraction >= 1.0:
+        return list(indices)
+    indices = torch.tensor(indices)
+    generator = torch.Generator().manual_seed(seed)
+    keep = []
+    for c in labels[indices].unique().tolist():
+        idx = indices[labels[indices] == c]  # this class, inside `indices`
+        idx = idx[torch.randperm(len(idx), generator=generator)]
+        n = math.ceil(fraction * len(idx))  # 1% of 450 is 4.5 -> 5 images, never 0
+        keep += idx[:n].tolist()
+    return sorted(keep)
+
+
+class ImageDataModule(pl.LightningDataModule):
+    """Tiny-ImageNet (pretraining and evaluation) or CIFAR-100 (transfer).
+
+    Splits, as the assignment asks:
+        train: the training images minus the held-out ones (Tiny-ImageNet: 90,000)
+        val:   n_val_per_class training images per class (Tiny-ImageNet: 50 x 200 = 10,000),
+               for all tuning and model selection
+        test:  the official labeled val set (Tiny-ImageNet "valid", 10,000),
+               only for the final numbers
+
+    label_fraction keeps a class-balanced part of train (1.0, 0.1 or 0.01) for
+    the linear probe, fine-tuning and the supervised baseline. Pretraining uses
+    1.0 and ignores the labels.
+    """
+
+    def __init__(self, data_dir, batch_size, num_workers, dataset_name="TinyImageNet",
+                 label_fraction=1.0, n_val_per_class=50, image_size=64, seed=42):
+        super().__init__()
+        self.data_dir = data_dir
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.dataset_name = dataset_name  # "TinyImageNet" or "CIFAR100"
+        self.label_fraction = label_fraction  # 1.0 = every training image
+        self.n_val_per_class = n_val_per_class
+        self.image_size = image_size
+        self.seed = seed
+        self.num_classes = NUM_CLASSES[dataset_name]
+
+    def _load(self):
+        """Return (train, test) datasets that yield (PIL image, label), and the train labels.
+
+        The files are already on disk (prepare_data), so this only opens them.
+        """
+        if self.dataset_name == "TinyImageNet":
+            ds = load_dataset("zh-plus/tiny-imagenet", cache_dir=self.data_dir)
+            train = TinyImageNetSplit(ds["train"])  # 100,000 images
+            test = TinyImageNetSplit(ds["valid"])  # 10,000 images, the official val set
+            # Read the label column straight from the Arrow table: fast, and no image is decoded.
+            labels = torch.tensor(ds["train"].data.column("label").to_pylist())
+        else:
+            train = datasets.CIFAR100(self.data_dir, train=True, download=True)  # 50,000 images, 32x32
+            test = datasets.CIFAR100(self.data_dir, train=False, download=True)  # 10,000 images
+            labels = torch.tensor(train.targets)
+        return train, test, labels
+
+    def prepare_data(self):
+        # Download once. Lightning calls this before setup, on one process only.
+        # Only the download: the splits are built in setup.
+        if self.dataset_name == "TinyImageNet":
+            load_dataset("zh-plus/tiny-imagenet", cache_dir=self.data_dir)
+        else:
+            datasets.CIFAR100(self.data_dir, train=True, download=True)
+            datasets.CIFAR100(self.data_dir, train=False, download=True)
+
+    def setup(self, stage):
+        # train.py calls fit, validate and test, and each calls setup. The splits
+        # are the same every time, so they are built only on the first call.
+        if hasattr(self, "train_ds"):
+            return
+        train_transform, eval_transform = build_transforms(self.image_size)
+        train_base, test_base, labels = self._load()
+
+        all_train_idx, val_idx = split_per_class(labels, self.n_val_per_class, self.seed)
+        train_idx = balanced_subset(all_train_idx, labels, self.label_fraction, self.seed)
+
+        self.train_ds = TransformedSubset(train_base, train_idx, train_transform)
+        # The k-NN memory bank: ALL the training images, whatever label_fraction is,
+        # with the eval transform (no flip), so every pass gives the same features in
+        # the same order. Every model is scored with the same bank.
+        self.labels = labels
+        self.bank_idx = all_train_idx
+        self.bank_ds = TransformedSubset(train_base, all_train_idx, eval_transform)
+        self.val_ds = TransformedSubset(train_base, val_idx, eval_transform)
+        self.test_ds = TransformedSubset(test_base, range(len(test_base)), eval_transform)
+
+    def _dataloader(self, dataset, shuffle):
+        return DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            shuffle=shuffle,
+            persistent_workers=self.num_workers > 0,  # keep the workers between epochs instead of starting new ones
+            pin_memory=torch.cuda.is_available(),  # faster copy to the GPU; does nothing on a CPU
+        )
+
+    def train_dataloader(self):
+        return self._dataloader(self.train_ds, shuffle=True)
+
+    def bank_dataloader(self, max_size=None):
+        """All training images, no flip, fixed order: the k-NN memory bank.
+
+        max_size keeps a class-balanced part of it (None = all), with the same
+        balanced_subset as the labeled subsets: 5,000 of 90,000 -> 25 per class.
+        It does not depend on the order the images are stored in.
+        """
+        dataset = self.bank_ds
+        if max_size is not None and max_size < len(dataset):
+            keep = balanced_subset(self.bank_idx, self.labels, max_size / len(dataset), self.seed)
+            position = {idx: i for i, idx in enumerate(self.bank_idx)}  # dataset index -> position in bank_ds
+            dataset = Subset(dataset, [position[idx] for idx in keep])
+        return self._dataloader(dataset, shuffle=False)
+
+    def val_dataloader(self):
+        return self._dataloader(self.val_ds, shuffle=False)
+
+    def test_dataloader(self):
+        return self._dataloader(self.test_ds, shuffle=False)
