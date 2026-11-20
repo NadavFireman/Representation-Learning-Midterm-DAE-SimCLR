@@ -10,12 +10,14 @@ from model import DenoisingAutoEncoder, EncoderClassifier, SupervisedEncoder
 # pretrain_supervise_encoder: SupervisedEncoder, the same encoder trained with labels.
 # linear_probe and finetune: EncoderClassifier, which loads a saved encoder.
 # knn: no training, k-NN accuracy of a saved encoder's h.
+# analysis: no training, per-class accuracy, t-SNE, retrieval and robustness of a saved encoder (analysis.py).
 MODES = (
     "pretrain",
     "pretrain_supervise_encoder",
     "linear_probe",
     "finetune",
     "knn",
+    "analysis",
 )
 DATASETS = {"tinyimagenet": "TinyImageNet", "cifar100": "CIFAR100"}
 # Which encoder linear_probe, finetune and knn use:
@@ -135,8 +137,8 @@ def build_model(mode):
             latent_dim=config.LATENT_DIM,
         )
 
-    # linear_probe, finetune and knn: the saved encoder (or a random one) + a new head.
-    # knn only uses model.encoder, frozen.
+    # linear_probe, finetune, knn and analysis: the saved encoder (or a random one) + a new head.
+    # knn and analysis only use model.encoder, frozen.
     return EncoderClassifier(
         learning_rate=config.FINETUNE_LEARNING_RATE if mode == "finetune" else config.LEARNING_RATE,
         num_classes=num_classes,

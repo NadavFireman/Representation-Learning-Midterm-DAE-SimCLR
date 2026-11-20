@@ -1,4 +1,5 @@
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, Callback, TQDMProgressBar
+from pytorch_lightning.callbacks.progress.tqdm_progress import Tqdm
 
 import config
 from knn import knn_evaluate
@@ -10,12 +11,13 @@ class ColabProgressBar(TQDMProgressBar):
     The validation bar is drawn on a second line, and Colab can't redraw a second
     line in place, so every update would be printed as a new line.
     Validation metrics still appear at the end of the main epoch bar.
+    The bar is created disabled: a bar disabled only after it was created has
+    already drawn itself, and in a notebook that left an empty "Validation:" bar
+    after every epoch.
     """
 
     def init_validation_tqdm(self):
-        bar = super().init_validation_tqdm()
-        bar.disable = True
-        return bar
+        return Tqdm(disable=True)
 
 
 class MyPrintingCallback(Callback):

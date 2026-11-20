@@ -8,6 +8,7 @@ from callbacks import MyPrintingCallback, EarlyStopping, ModelCheckpoint, ColabP
 from pytorch_lightning.loggers import TensorBoardLogger
 from utils import parse_args, build_model
 from knn import knn_evaluate
+from analysis import run_analysis
 torch.set_float32_matmul_precision("medium")  # to make lightning happy
 
 
@@ -69,6 +70,10 @@ def run(mode):
         logger.log_metrics(results)
         logger.save()  # writes hparams.yaml (no Trainer here to do it)
         return results
+
+    if mode == "analysis":
+        # No training: the A5 evidence and the robustness test of the saved (or random) encoder.
+        return run_analysis(model.encoder, dm, logger)
 
     callbacks = [MyPrintingCallback(), ColabProgressBar(refresh_rate=20), EpochMetricsCallback()]
     if mode in config.PRETRAIN_MODES:
@@ -154,7 +159,7 @@ if __name__ == "__main__":
         if args.mode == "pretrain":
             print(f"  {args.mode:<28} ({config.DATASET}): reconstruction MSE {results['test_loss']:.4f}, "
                   f"k-NN top-1 {results['test_knn_top1']:.3f}, top-5 {results['test_knn_top5']:.3f}")
-        elif args.mode == "knn":
+        elif args.mode in ("knn", "analysis"):
             print(f"  {args.mode:<28} ({config.DATASET}): k-NN top-1 {results['test_knn_top1']:.3f}, "
                   f"top-5 {results['test_knn_top5']:.3f}")
         else:
