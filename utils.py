@@ -125,6 +125,7 @@ def build_model(mode):
             latent_dim=config.LATENT_DIM,
             noise_type=config.NOISE_TYPE,
             noise_level=config.NOISE_LEVEL,
+            weight_decay=config.WEIGHT_DECAY,
         )
 
     if mode == "pretrain_supervise_encoder":

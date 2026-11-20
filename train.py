@@ -45,9 +45,10 @@ def run(mode):
     settings.update(MODE=mode, RUN_NUM_EPOCHS=num_epochs, RUN_LABEL_FRACTION=label_fraction)
     logger.log_hyperparams(settings)
 
+    batch_size = config.DAE_BATCH_SIZE if mode == "pretrain" else config.BATCH_SIZE
     dm = ImageDataModule(
         data_dir=config.DATA_DIR,
-        batch_size=config.BATCH_SIZE,
+        batch_size=batch_size,
         num_workers=config.NUM_WORKERS,
         dataset_name=config.DATASET,
         label_fraction=label_fraction,
@@ -98,7 +99,7 @@ def run(mode):
     print(model)
     details = (
         f"Training mode is: {mode}, on {config.DATASET} for {num_epochs} epochs, "
-        f"batch size {config.BATCH_SIZE}, label fraction {label_fraction}, latent_dim {config.LATENT_DIM}, "
+        f"batch size {batch_size}, label fraction {label_fraction}, latent_dim {config.LATENT_DIM}, "
         f"seed {config.TRAIN_SEED}"
     )
     if mode == "pretrain":

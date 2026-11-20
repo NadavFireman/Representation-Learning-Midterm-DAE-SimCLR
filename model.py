@@ -16,12 +16,13 @@ def build_encoder(latent_dim):
     The course wrote these layers out again in every class. Here one function
     builds them, so every model is sure to get the same encoder, and a saved
     state_dict loads into any of them.
+    GELU instead of the course's ReLU: search 2 chose it by val k-NN (0.0697 vs 0.0617).
     """
     return nn.Sequential(
         nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),  # [B, 3, 64, 64] -> [B, 32, 32, 32]
-        nn.ReLU(),  # [B, 32, 32, 32] -> [B, 32, 32, 32]
+        nn.GELU(),  # [B, 32, 32, 32] -> [B, 32, 32, 32]
         nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # [B, 32, 32, 32] -> [B, 64, 16, 16]
-        nn.ReLU(),  # [B, 64, 16, 16] -> [B, 64, 16, 16]
+        nn.GELU(),  # [B, 64, 16, 16] -> [B, 64, 16, 16]
         nn.Flatten(),  # [B, 64, 16, 16] -> [B, 16384]
         nn.Linear(64 * 16 * 16, latent_dim),  # [B, 16384] -> [B, latent_dim]
     )
@@ -56,11 +57,13 @@ class DenoisingAutoEncoder(pl.LightningModule):
     the last layer has no activation: the clean target is normalized, so its pixels
     run from about -1.7 to 2.1, and a Sigmoid, (0, 1), could never match them.
     After pretraining only the encoder is kept.
+
+    The optimizer is AdamW with weight_decay, chosen by search 2 over Adam and RAdam.
     """
 
-    def __init__(self, learning_rate, latent_dim, noise_type, noise_level):
+    def __init__(self, learning_rate, latent_dim, noise_type, noise_level, weight_decay=0.0):
         super().__init__()
-        self.save_hyperparameters()  # learning_rate, latent_dim, noise_type, noise_level -> self.hparams
+        self.save_hyperparameters()  # learning_rate, latent_dim, noise_type, noise_level, weight_decay -> self.hparams
         # Black (pixel 0) and white (pixel 1) after normalization, per channel, for salt_pepper.
         # Buffers: they move to the GPU with the model, and the optimizer never changes them.
         mean = torch.tensor(TINY_IMAGENET_MEAN).view(1, 3, 1, 1)
@@ -71,10 +74,10 @@ class DenoisingAutoEncoder(pl.LightningModule):
         self.encoder = build_encoder(latent_dim)
         self.decoder = nn.Sequential(
             nn.Linear(latent_dim, 64 * 16 * 16),  # [B, latent_dim] -> [B, 16384]
-            nn.ReLU(),  # [B, 16384] -> [B, 16384]
+            nn.GELU(),  # [B, 16384] -> [B, 16384]
             nn.Unflatten(1, (64, 16, 16)),  # [B, 16384] -> [B, 64, 16, 16]
             nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, 64, 16, 16] -> [B, 32, 32, 32]
-            nn.ReLU(),  # [B, 32, 32, 32] -> [B, 32, 32, 32]
+            nn.GELU(),  # [B, 32, 32, 32] -> [B, 32, 32, 32]
             nn.ConvTranspose2d(32, 3, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, 32, 32, 32] -> [B, 3, 64, 64], same scale as the normalized input
         )
         self.loss_fn = nn.MSELoss()
@@ -144,7 +147,7 @@ class DenoisingAutoEncoder(pl.LightningModule):
         self.logger.experiment.add_image(tag, grid, self.global_step)
 
     def configure_optimizers(self):
-        return optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
+        return optim.AdamW(self.parameters(), lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay)
 
 
 class EncoderClassifier(pl.LightningModule):

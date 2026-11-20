@@ -1,18 +1,20 @@
 import os
 
-# Full version: Colab, GPU, all the data. MA_local/config.py is the same file
-# with smaller values (batch, epochs, workers, precision, LIMIT_BATCHES, SWEEP).
+# Full version: Colab, GPU, all the data.
 
 # Training hyperparameters (defaults for one run; the search below overrides the DAE ones)
+# The DAE values are the winner of search 2 (colab_search2.ipynb), chosen by val k-NN.
 LEARNING_RATE = 0.001
-BATCH_SIZE = 256
+BATCH_SIZE = 256  # linear_probe, finetune and the supervised encoder
+DAE_BATCH_SIZE = 512  # pretrain (the DAE)
+WEIGHT_DECAY = 0.01  # AdamW weight decay of the DAE
 NUM_EPOCHS = 30  # fixed, no early stopping: the DAE checkpoint is chosen by val k-NN
 SWEEP_NUM_EPOCHS = 8  # proxy setting for the search (--search): every trial, same number of epochs. Full NUM_EPOCHS only for final models
-LATENT_DIM = 64  # length of h. The DAE and EncoderClassifier must use the same value.
-NOISE_TYPE = "gaussian"  # DAE corruption: "gaussian", "mask" or "salt_pepper" (see model.py)
-NOISE_LEVEL = 0.25  # gaussian: noise std; mask / salt_pepper: fraction of pixels. 0 = plain autoencoder (AE baseline)
+LATENT_DIM = 256  # length of h. The DAE and EncoderClassifier must use the same value.
+NOISE_TYPE = "salt_pepper"  # DAE corruption: "gaussian", "mask" or "salt_pepper" (see model.py)
+NOISE_LEVEL = 0.5  # gaussian: noise std; mask / salt_pepper: fraction of pixels. 0 = plain autoencoder (AE baseline)
 
-# Hyperparameter search (assignment A2): a full grid over these three DAE
+# Hyperparameter search 1 (assignment A2): a full grid over these three DAE
 # hyperparameters. The learning rate stays fixed. train.py does one run per
 # call, as in the course; the launcher (the search cell of the notebook) runs
 # it once per combination, for example:
