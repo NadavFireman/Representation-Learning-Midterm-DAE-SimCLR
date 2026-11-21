@@ -1,3 +1,4 @@
+import json
 import os
 import pandas as pd
 import torch
@@ -6,7 +7,7 @@ from datamodule import ImageDataModule
 import config
 from callbacks import MyPrintingCallback, EarlyStopping, ModelCheckpoint, ColabProgressBar, EpochMetricsCallback, KNNCallback
 from pytorch_lightning.loggers import TensorBoardLogger
-from utils import parse_args, build_model
+from utils import parse_args, build_model, architecture_tag, protocol_tag
 from knn import knn_evaluate
 from analysis import run_analysis
 torch.set_float32_matmul_precision("medium")  # to make lightning happy
@@ -19,14 +20,40 @@ def run(mode):
     # One folder per run, named by everything that defines it. The course named it
     # by the start time; a fixed name lets a run that was cut off (Colab disconnect)
     # find its own last.ckpt and continue. To train a run again from scratch,
-    # delete its folder.
-    encoder_name = os.path.basename(config.ENCODER_PATH)[:-3] if config.ENCODER_PATH else f"random_s{config.TRAIN_SEED}"
+    # move its folder out of tb_logs.
+    random_name = f"random{architecture_tag('random')}_s{config.TRAIN_SEED}"  # random_s42, random_resnet18_s42
+    encoder_name = os.path.basename(config.ENCODER_PATH)[:-3] if config.ENCODER_PATH else random_name
     run_name = f"{mode}_{encoder_name}"  # a search trial: encoder_name already ends with "_search"
     if mode != "pretrain":
         run_name += f"_{config.DATASET}_{config.LABEL_FRACTION}"
     if config.SEARCH and config.ENCODER_PATH is None:
         run_name += "_search"  # random-init encoder: no file name to carry it
+    if mode in ("linear_probe", "finetune"):
+        run_name += protocol_tag()  # "_acc": the checkpoint is chosen by val_accuracy (config.PROTOCOL)
+    # pretrain_supervise_encoder already has it: its name comes from its encoder file (utils.encoder_path).
     logger = TensorBoardLogger(os.path.join(config.OUTPUT_DIR, "tb_logs"), name="", version=run_name, default_hp_metric=False)
+
+    # A run that finished writes its results to results.json in its folder (see
+    # save_results). Running it again (a loop restarted after a disconnect) prints
+    # those results and stops. Resuming from last.ckpt alone is not enough: Lightning
+    # does not save that EarlyStopping stopped the run, so an early-stopped run
+    # would train more epochs and could replace its test results.
+    # Search trials always run again: train.py rewrites their row in sweep_results.csv.
+    results_file = os.path.join(logger.log_dir, "results.json")
+    if os.path.exists(results_file) and not config.SEARCH:
+        with open(results_file) as f:
+            results = json.load(f)
+        print(f"{run_name} already finished; its results are in {results_file}")
+        return results
+
+    def save_results(results):
+        """Write the final numbers of this run to results.json, and return them."""
+        results = {key: float(value) for key, value in results.items()}  # tensors and numpy numbers -> float
+        os.makedirs(logger.log_dir, exist_ok=True)
+        with open(results_file, "w") as f:
+            json.dump(results, f, indent=1)
+        return results
+
     model = build_model(mode)
 
     # The DAE uses every training image and no labels. The other modes use the
@@ -69,11 +96,11 @@ def run(mode):
             results["test_knn_top1"], results["test_knn_top5"] = knn_evaluate(model.encoder, dm, config.KNN_K, "test")
         logger.log_metrics(results)
         logger.save()  # writes hparams.yaml (no Trainer here to do it)
-        return results
+        return results if config.SEARCH else save_results(results)
 
     if mode == "analysis":
         # No training: the A5 evidence and the robustness test of the saved (or random) encoder.
-        return run_analysis(model.encoder, dm, logger)
+        return save_results(run_analysis(model.encoder, dm, logger))
 
     callbacks = [MyPrintingCallback(), ColabProgressBar(refresh_rate=20), EpochMetricsCallback()]
     if mode in config.PRETRAIN_MODES:
@@ -84,10 +111,15 @@ def run(mode):
         # not by reconstruction, so the kept epoch is the one with the best val k-NN.
         callbacks.append(ModelCheckpoint(dirpath=checkpoint_dir, monitor="val_knn_top1", mode="max"))
     else:
-        callbacks.append(EarlyStopping(monitor="val_loss"))
-        callbacks.append(ModelCheckpoint(dirpath=checkpoint_dir, monitor="val_loss", mode="min"))
-    # last.ckpt, rewritten every epoch, to continue after a disconnect: a finished run
-    # then reloads its final epoch and stops. save_last=True on the callback above
+        # config.PROTOCOL: "acc" stops on and keeps the best val_accuracy, "loss" the lowest val_loss.
+        if config.PROTOCOL == "acc":
+            callbacks.append(EarlyStopping(monitor="val_accuracy", mode="max", patience=config.PATIENCE))
+            callbacks.append(ModelCheckpoint(dirpath=checkpoint_dir, monitor="val_accuracy", mode="max"))
+        else:
+            callbacks.append(EarlyStopping(monitor="val_loss"))
+            callbacks.append(ModelCheckpoint(dirpath=checkpoint_dir, monitor="val_loss", mode="min"))
+    # last.ckpt, rewritten every epoch, to continue after a disconnect. (A run that
+    # finished is caught earlier, by its results.json.) save_last=True on the callback above
     # would rewrite it only when the monitored metric improves, so a finished run
     # would train again from its best epoch. This callback comes second, so
     # ckpt_path="best" below still means the monitored one.
@@ -149,7 +181,7 @@ def run(mode):
         return val_results[0]
 
     results = trainer.test(model, dm, ckpt_path="best")
-    return results[0]
+    return save_results(results[0])
 
 
 if __name__ == "__main__":

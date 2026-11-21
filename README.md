@@ -17,11 +17,17 @@ Open `colab_train.ipynb` in Colab with a GPU runtime and run the cells in order:
 1. Clone the repository (or pull it, if the runtime already has it).
 2. Install the requirements and check the GPU.
 3. Mount Google Drive. Every output (logs, checkpoints, encoders) goes there, so a
-   disconnect loses nothing. After a disconnect, run the cells again: every run
-   continues from its own `last.ckpt`.
+   disconnect loses nothing. After a disconnect, run the cells again: an unfinished
+   run continues from its own `last.ckpt`, and a finished one (it has `results.json`
+   in its folder) prints its results and is skipped.
 4. Start TensorBoard.
 5. Run one `train.py` command, or
 6. run all the runs of Part A, one after the other (43 runs).
+
+`colab_resnet.ipynb` (L4 GPU) runs the same protocol with a ResNet-18 encoder
+(`--backbone resnet18`): stage 1 compares two DAE decoders, the light one and an
+inverted ResNet-18 (`--decoder resnet18`); stage 2 runs the full protocol with the
+chosen decoder.
 
 ### Locally
 
@@ -53,6 +59,9 @@ Other flags:
 | `--dataset` | `tinyimagenet`, or `cifar100` for transfer. |
 | `--label_fraction` | `1.0`, `0.1` or `0.01`: a class-balanced share of the labels, the same images for every model. |
 | `--noise_type`, `--noise_level`, `--latent_dim` | The DAE hyperparameters. |
+| `--backbone` | `small` (default, the course encoder) or `resnet18`. The modes that load an encoder need the backbone it was trained with. |
+| `--decoder` | The DAE decoder: `light` (default) or `resnet18` (inverted ResNet-18). The modes that load a DAE encoder need it too: it is part of the encoder's file name. |
+| `--protocol` | `acc` (default): classifier runs stop on and keep the best `val_accuracy`, with patience 5 and label smoothing 0.1; their folders and the supervised encoder files end in `_acc`. `loss`: the first runs, by `val_loss`. |
 | `--seed` | The training seed. The splits and the label subsets always use `config.SEED`. |
 | `--search` | One trial of the hyperparameter search: proxy setting (8 epochs), no test set. |
 | `--output_dir` | Where the logs, checkpoints and encoders go. |
@@ -64,6 +73,8 @@ python train.py --mode pretrain --noise_level 0                                 
 python train.py --mode finetune --encoder dae --label_fraction 0.1                # fine-tune with 10% of the labels
 python train.py --mode linear_probe --encoder random --dataset cifar100           # random encoder, transfer
 python train.py --mode analysis --encoder dae                                     # the A5 evidence of the DAE
+python train.py --mode pretrain --backbone resnet18 --decoder resnet18            # ResNet-18 encoder-decoder DAE
+python train.py --mode linear_probe --encoder dae --backbone resnet18 --decoder resnet18   # its linear probe
 ```
 
 ## Data splits
@@ -99,7 +110,7 @@ Chosen by validation k-NN accuracy, not by reconstruction error, in two searches
 | `train.py` | One run: builds the model and the data, trains, validates and tests. |
 | `config.py` | All the settings. |
 | `utils.py` | Command-line flags, encoder file names, building the model for each mode. |
-| `model.py` | The encoder, the DAE, the classifier (linear probe and fine-tuning) and the supervised encoder. |
+| `model.py` | The encoders (small, ResNet-18), the decoders (light, inverted ResNet-18), the DAE, the classifier (linear probe and fine-tuning) and the supervised encoder. |
 | `datamodule.py` | Tiny-ImageNet and CIFAR-100, the splits and the label subsets. |
 | `augmentations.py` | The transforms and the Tiny-ImageNet normalization. |
 | `knn.py` | k-NN evaluation. |

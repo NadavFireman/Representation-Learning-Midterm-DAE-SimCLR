@@ -3,11 +3,19 @@ from torch import nn, optim
 import pytorch_lightning as pl
 import torchmetrics
 import torchvision
+from torchvision.models.resnet import BasicBlock
 
 from augmentations import TINY_IMAGENET_MEAN, TINY_IMAGENET_STD
 
-def build_encoder(latent_dim):
+BACKBONES = ("small", "resnet18")  # --backbone: the encoder of every model
+DECODERS = ("light", "resnet18")  # --decoder: the decoder of the DAE
+
+
+def build_encoder(latent_dim, backbone="small"):
     """The encoder f_theta: [B, 3, 64, 64] -> h [B, latent_dim].
+
+    backbone="resnet18" builds the ResNet-18 of build_resnet18_encoder.
+    backbone="small", the default, builds the encoder below.
 
     The small encoder of the lec4 SimCLR class (the assignment's backbone), for
     3x64x64 images instead of 1x28x28. Two stride-2 convolutions halve the image
@@ -18,6 +26,8 @@ def build_encoder(latent_dim):
     state_dict loads into any of them.
     GELU instead of the course's ReLU: search 2 chose it by val k-NN (0.0697 vs 0.0617).
     """
+    if backbone == "resnet18":
+        return build_resnet18_encoder(latent_dim)
     return nn.Sequential(
         nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),  # [B, 3, 64, 64] -> [B, 32, 32, 32]
         nn.GELU(),  # [B, 32, 32, 32] -> [B, 32, 32, 32]
@@ -25,6 +35,106 @@ def build_encoder(latent_dim):
         nn.GELU(),  # [B, 64, 16, 16] -> [B, 64, 16, 16]
         nn.Flatten(),  # [B, 64, 16, 16] -> [B, 16384]
         nn.Linear(64 * 16 * 16, latent_dim),  # [B, 16384] -> [B, latent_dim]
+    )
+
+
+def build_resnet18_encoder(latent_dim):
+    """ResNet-18 as the encoder: [B, 3, 64, 64] -> h [B, latent_dim].
+
+    The ResNet-18 of the course NN class (lec2-lec5): torchvision's model with
+    random weights. weights=None matters here: ImageNet weights have already
+    seen Tiny-ImageNet's images and labels, since Tiny-ImageNet is cut out of ImageNet.
+
+    The course changed conv1 for 1-channel 28x28 MNIST. For 3-channel 64x64
+    images three layers change:
+      conv1:   7x7 stride 2 -> 3x3 stride 1. The stock layer shrinks a 224x224
+               image by 2 at once; on 64x64 that throws away detail.
+      maxpool: removed (Identity), for the same reason. With both stock layers
+               the last feature map would be 2x2; now it is 8x8.
+      fc:      the stock 1000-way layer -> Linear(512, latent_dim), so h has the
+               same length as with the small encoder, and the decoder, the k-NN
+               and the heads work unchanged.
+    """
+    encoder = torchvision.models.resnet18(weights=None, num_classes=latent_dim)  # fc: [B, 512] -> [B, latent_dim]
+    encoder.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)  # [B, 3, 64, 64] -> [B, 64, 64, 64]
+    encoder.maxpool = nn.Identity()  # [B, 64, 64, 64] -> [B, 64, 64, 64]
+    # layer1: [B, 64, 64, 64], layer2: [B, 128, 32, 32], layer3: [B, 256, 16, 16],
+    # layer4: [B, 512, 8, 8], avgpool + flatten: [B, 512], fc: [B, latent_dim]
+    return encoder
+
+
+def build_decoder(latent_dim, decoder="light"):
+    """The decoder g_phi: h [B, latent_dim] -> [B, 3, 64, 64].
+
+    decoder="light", the default: the mirror of the small encoder (16 -> 32 -> 64),
+    as in the course AutoEncoder. As there, the last layer has no activation: the
+    clean target is normalized, so its pixels run from about -1.7 to 2.1, and a
+    Sigmoid, (0, 1), could never match them.
+    decoder="resnet18": build_resnet18_decoder.
+    """
+    if decoder == "resnet18":
+        return build_resnet18_decoder(latent_dim)
+    return nn.Sequential(
+        nn.Linear(latent_dim, 64 * 16 * 16),  # [B, latent_dim] -> [B, 16384]
+        nn.GELU(),  # [B, 16384] -> [B, 16384]
+        nn.Unflatten(1, (64, 16, 16)),  # [B, 16384] -> [B, 64, 16, 16]
+        nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, 64, 16, 16] -> [B, 32, 32, 32]
+        nn.GELU(),  # [B, 32, 32, 32] -> [B, 32, 32, 32]
+        nn.ConvTranspose2d(32, 3, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, 32, 32, 32] -> [B, 3, 64, 64], same scale as the normalized input
+    )
+
+
+def resnet18_up_stage(in_channels, out_channels, upsample):
+    """One stage of the inverted ResNet-18: two BasicBlocks, then double H and W.
+
+    A ResNet-18 stage halves H and W in its first block and keeps them in the
+    second. This stage runs the other way. The BasicBlocks are torchvision's own,
+    the ones inside the encoder. When the number of channels changes, BasicBlock
+    needs a 1x1 convolution on its shortcut, as ResNet itself uses.
+    """
+    shortcut = None
+    if in_channels != out_channels:
+        shortcut = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),  # [B, in, H, W] -> [B, out, H, W]
+            nn.BatchNorm2d(out_channels),
+        )
+    layers = [
+        BasicBlock(in_channels, out_channels, downsample=shortcut),  # [B, in, H, W] -> [B, out, H, W]
+        BasicBlock(out_channels, out_channels),  # [B, out, H, W] -> [B, out, H, W]
+    ]
+    if upsample:
+        layers.append(nn.Upsample(scale_factor=2, mode="nearest"))  # [B, out, H, W] -> [B, out, 2H, 2W]
+    return nn.Sequential(*layers)
+
+
+def build_resnet18_decoder(latent_dim):
+    """The inverted ResNet-18: h [B, latent_dim] -> [B, 3, 64, 64].
+
+    Lecture 3 [00:36:37-00:37:16, 00:43:43-00:45:08]: a decoder that is ResNet-18
+    backwards, layer 4, 3, 2, 1, written by us with the BasicBlock, since
+    torchvision has no inverted ResNet. Each stage mirrors one of
+    build_resnet18_encoder, so the shapes run in reverse:
+        fc^-1      Linear + reshape     [B, latent_dim] -> [B, 512, 8, 8]
+        layer4^-1  512 -> 256, x2       -> [B, 256, 16, 16]
+        layer3^-1  256 -> 128, x2       -> [B, 128, 32, 32]
+        layer2^-1  128 -> 64,  x2       -> [B, 64, 64, 64]
+        layer1^-1  64 -> 64             -> [B, 64, 64, 64]
+        conv1^-1   3x3 conv to 3 colors -> [B, 3, 64, 64]
+    No skip connections from the encoder (that would be a U-Net): everything
+    still passes through h, or the encoder would not need to learn anything.
+    This decoder is much stronger than the light one. Lecture 3 [00:41:57]
+    asks whether a weaker decoder makes the encoder learn more; running both
+    decoders with the same encoder tests that.
+    """
+    return nn.Sequential(
+        nn.Linear(latent_dim, 512 * 8 * 8),  # [B, latent_dim] -> [B, 32768]
+        nn.ReLU(),  # [B, 32768] -> [B, 32768]
+        nn.Unflatten(1, (512, 8, 8)),  # [B, 32768] -> [B, 512, 8, 8]
+        resnet18_up_stage(512, 256, upsample=True),  # [B, 512, 8, 8] -> [B, 256, 16, 16]
+        resnet18_up_stage(256, 128, upsample=True),  # [B, 256, 16, 16] -> [B, 128, 32, 32]
+        resnet18_up_stage(128, 64, upsample=True),  # [B, 128, 32, 32] -> [B, 64, 64, 64]
+        resnet18_up_stage(64, 64, upsample=False),  # [B, 64, 64, 64] -> [B, 64, 64, 64]
+        nn.Conv2d(64, 3, kernel_size=3, padding=1),  # [B, 64, 64, 64] -> [B, 3, 64, 64], no activation (normalized target)
     )
 
 
@@ -53,17 +163,17 @@ class DenoisingAutoEncoder(pl.LightningModule):
     batch i always comes from seed i, so every epoch and every trial is scored
     on the same corrupted images and their reconstruction errors can be compared.
 
-    The decoder mirrors the encoder (16 -> 32 -> 64). As in the course AutoEncoder,
-    the last layer has no activation: the clean target is normalized, so its pixels
-    run from about -1.7 to 2.1, and a Sigmoid, (0, 1), could never match them.
+    backbone and decoder pick the two halves (build_encoder, build_decoder). The
+    defaults, "small" and "light", are the course encoder and its mirror.
     After pretraining only the encoder is kept.
 
     The optimizer is AdamW with weight_decay, chosen by search 2 over Adam and RAdam.
     """
 
-    def __init__(self, learning_rate, latent_dim, noise_type, noise_level, weight_decay=0.0):
+    def __init__(self, learning_rate, latent_dim, noise_type, noise_level, weight_decay=0.0,
+                 backbone="small", decoder="light"):
         super().__init__()
-        self.save_hyperparameters()  # learning_rate, latent_dim, noise_type, noise_level, weight_decay -> self.hparams
+        self.save_hyperparameters()  # learning_rate, latent_dim, noise_type, noise_level, weight_decay, backbone, decoder -> self.hparams
         # Black (pixel 0) and white (pixel 1) after normalization, per channel, for salt_pepper.
         # Buffers: they move to the GPU with the model, and the optimizer never changes them.
         mean = torch.tensor(TINY_IMAGENET_MEAN).view(1, 3, 1, 1)
@@ -71,15 +181,8 @@ class DenoisingAutoEncoder(pl.LightningModule):
         self.register_buffer("black", (0 - mean) / std)  # [1, 3, 1, 1]
         self.register_buffer("white", (1 - mean) / std)
 
-        self.encoder = build_encoder(latent_dim)
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 64 * 16 * 16),  # [B, latent_dim] -> [B, 16384]
-            nn.GELU(),  # [B, 16384] -> [B, 16384]
-            nn.Unflatten(1, (64, 16, 16)),  # [B, 16384] -> [B, 64, 16, 16]
-            nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, 64, 16, 16] -> [B, 32, 32, 32]
-            nn.GELU(),  # [B, 32, 32, 32] -> [B, 32, 32, 32]
-            nn.ConvTranspose2d(32, 3, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, 32, 32, 32] -> [B, 3, 64, 64], same scale as the normalized input
-        )
+        self.encoder = build_encoder(latent_dim, backbone)
+        self.decoder = build_decoder(latent_dim, decoder)
         self.loss_fn = nn.MSELoss()
 
     def forward(self, x):
@@ -161,11 +264,13 @@ class EncoderClassifier(pl.LightningModule):
     Logs top-1 and top-5 accuracy, as the assignment asks.
     """
 
-    def __init__(self, learning_rate, num_classes, latent_dim, encoder_path=None, freeze_encoder=False):
+    def __init__(self, learning_rate, num_classes, latent_dim, encoder_path=None, freeze_encoder=False,
+                 backbone="small", label_smoothing=0.0):
         super().__init__()
-        self.save_hyperparameters()  # learning_rate, freeze_encoder, ... -> self.hparams
+        self.save_hyperparameters()  # learning_rate, freeze_encoder, backbone, ... -> self.hparams
 
-        self.encoder = build_encoder(latent_dim)
+        # backbone must be the one the saved encoder was built with, or its state_dict won't load.
+        self.encoder = build_encoder(latent_dim, backbone)
         if encoder_path is not None:
             # Weights from pretraining. The head below is not in this file.
             state_dict = torch.load(encoder_path, map_location="cpu", weights_only=True)
@@ -181,7 +286,10 @@ class EncoderClassifier(pl.LightningModule):
             for p in self.encoder.parameters():
                 p.requires_grad = False
 
-        self.loss_fn = nn.CrossEntropyLoss()
+        # label_smoothing > 0 (config.PROTOCOL "acc"): the target puts 1 - label_smoothing on
+        # the true class, so the model is not pushed to be 100% sure, and val_loss
+        # does not climb from overconfidence while val_accuracy still improves.
+        self.loss_fn = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         self.accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
         self.top5_accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes, top_k=5)
 
@@ -248,5 +356,6 @@ class SupervisedEncoder(EncoderClassifier):
     the values are always None and False here.
     """
 
-    def __init__(self, learning_rate, num_classes, latent_dim, **ignored):
-        super().__init__(learning_rate, num_classes, latent_dim, encoder_path=None, freeze_encoder=False)
+    def __init__(self, learning_rate, num_classes, latent_dim, backbone="small", label_smoothing=0.0, **ignored):
+        super().__init__(learning_rate, num_classes, latent_dim, encoder_path=None, freeze_encoder=False,
+                         backbone=backbone, label_smoothing=label_smoothing)

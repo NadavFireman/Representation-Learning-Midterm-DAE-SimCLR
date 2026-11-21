@@ -3,7 +3,7 @@ import os
 
 import config
 from datamodule import NUM_CLASSES
-from model import DenoisingAutoEncoder, EncoderClassifier, SupervisedEncoder
+from model import BACKBONES, DECODERS, DenoisingAutoEncoder, EncoderClassifier, SupervisedEncoder
 
 # One name from this tuple. config.MODEL_NAME is the default.
 # pretrain: DenoisingAutoEncoder (--noise_level 0 = plain autoencoder, the AE baseline).
@@ -29,6 +29,34 @@ DATASETS = {"tinyimagenet": "TinyImageNet", "cifar100": "CIFAR100"}
 ENCODERS = ("dae", "supervised", "random")
 
 
+def architecture_tag(encoder):
+    """The part of a file name that says which architecture an encoder has.
+
+    Empty for the defaults (the small encoder, the light decoder), so every
+    file and run folder made before --backbone and --decoder existed keeps its
+    name, and is still found. Otherwise "_resnet18", and for a DAE with the
+    inverted ResNet-18 decoder also "_resnet18dec". Without the tag, a ResNet run
+    would continue from the last.ckpt of the small-encoder run with the same
+    settings, or overwrite its encoder file.
+    """
+    tag = "" if config.BACKBONE == "small" else f"_{config.BACKBONE}"
+    if encoder == "dae" and config.DECODER != "light":
+        tag += f"_{config.DECODER}dec"
+    return tag
+
+
+def protocol_tag():
+    """"_acc" for config.PROTOCOL "acc", empty for "loss".
+
+    It goes on the runs that train a classifier (their checkpoint is chosen by
+    the protocol) and on the supervised encoder files. The first runs, with
+    "loss", keep their names, so they stay next to the new ones and are not
+    continued or overwritten. The DAE does not get it: its checkpoint is chosen
+    by val k-NN under both protocols.
+    """
+    return "_acc" if config.PROTOCOL == "acc" else ""
+
+
 def encoder_path(encoder, pretrain_dataset):
     """File name of a saved encoder, built from everything it was trained with.
 
@@ -43,9 +71,9 @@ def encoder_path(encoder, pretrain_dataset):
     if encoder == "random":
         return None
     if encoder == "supervised":
-        name = f"supervised_{pretrain_dataset}_{config.LATENT_DIM}_{config.LABEL_FRACTION}_s{config.TRAIN_SEED}"
+        name = f"supervised_{pretrain_dataset}_{config.LATENT_DIM}_{config.LABEL_FRACTION}{architecture_tag(encoder)}{protocol_tag()}_s{config.TRAIN_SEED}"
     else:
-        name = f"dae_{pretrain_dataset}_{config.NOISE_TYPE}_{config.NOISE_LEVEL}_{config.LATENT_DIM}_s{config.TRAIN_SEED}"
+        name = f"dae_{pretrain_dataset}_{config.NOISE_TYPE}_{config.NOISE_LEVEL}_{config.LATENT_DIM}{architecture_tag(encoder)}_s{config.TRAIN_SEED}"
     if config.SEARCH:
         name += "_search"
     return os.path.join(config.OUTPUT_DIR, "encoders", name + ".pt")
@@ -71,6 +99,20 @@ def parse_args():
     parser.add_argument("--latent_dim", type=int, default=config.LATENT_DIM)
     parser.add_argument("--label_fraction", type=float, default=config.LABEL_FRACTION, help="1.0, 0.1 or 0.01")
     parser.add_argument(
+        "--backbone",
+        choices=BACKBONES,
+        default=config.BACKBONE,
+        help="The encoder of every model: small (the course encoder) or resnet18. "
+        "linear_probe, finetune, knn and analysis need the backbone their encoder was trained with.",
+    )
+    parser.add_argument(
+        "--decoder",
+        choices=DECODERS,
+        default=config.DECODER,
+        help="The DAE decoder: light or resnet18 (inverted ResNet-18). The modes that load "
+        "a DAE encoder need it too, because it is part of that encoder's file name.",
+    )
+    parser.add_argument(
         "--encoder",
         choices=ENCODERS,
         default="dae",
@@ -81,6 +123,13 @@ def parse_args():
         choices=tuple(DATASETS),
         default="tinyimagenet",
         help="Where the loaded encoder was trained. Not used by the pretrain modes.",
+    )
+    parser.add_argument(
+        "--protocol",
+        choices=("acc", "loss"),
+        default=config.PROTOCOL,
+        help="How classifier runs stop and keep their checkpoint: acc (val_accuracy, patience 5, "
+        "label smoothing; run names end in _acc) or loss (val_loss, the first runs). See config.PROTOCOL.",
     )
     parser.add_argument(
         "--seed",
@@ -105,6 +154,9 @@ def parse_args():
     config.NOISE_LEVEL = args.noise_level
     config.LATENT_DIM = args.latent_dim
     config.LABEL_FRACTION = args.label_fraction
+    config.BACKBONE = args.backbone
+    config.DECODER = args.decoder
+    config.PROTOCOL = args.protocol
     config.TRAIN_SEED = args.seed
     config.SEARCH = args.search
     # pretrain writes the encoder (named after the dataset it trains on),
@@ -120,6 +172,7 @@ def parse_args():
 
 def build_model(mode):
     num_classes = NUM_CLASSES[config.DATASET]
+    label_smoothing = config.LABEL_SMOOTHING if config.PROTOCOL == "acc" else 0.0
 
     if mode == "pretrain":
         return DenoisingAutoEncoder(
@@ -128,6 +181,8 @@ def build_model(mode):
             noise_type=config.NOISE_TYPE,
             noise_level=config.NOISE_LEVEL,
             weight_decay=config.WEIGHT_DECAY,
+            backbone=config.BACKBONE,
+            decoder=config.DECODER,
         )
 
     if mode == "pretrain_supervise_encoder":
@@ -135,6 +190,8 @@ def build_model(mode):
             learning_rate=config.LEARNING_RATE,
             num_classes=num_classes,
             latent_dim=config.LATENT_DIM,
+            backbone=config.BACKBONE,
+            label_smoothing=label_smoothing,
         )
 
     # linear_probe, finetune, knn and analysis: the saved encoder (or a random one) + a new head.
@@ -145,4 +202,6 @@ def build_model(mode):
         latent_dim=config.LATENT_DIM,
         encoder_path=config.ENCODER_PATH,
         freeze_encoder=(mode != "finetune"),
+        backbone=config.BACKBONE,
+        label_smoothing=label_smoothing,
     )

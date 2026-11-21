@@ -13,6 +13,9 @@ SWEEP_NUM_EPOCHS = 8  # proxy setting for the search (--search): every trial, sa
 LATENT_DIM = 256  # length of h. The DAE and EncoderClassifier must use the same value.
 NOISE_TYPE = "salt_pepper"  # DAE corruption: "gaussian", "mask" or "salt_pepper" (see model.py)
 NOISE_LEVEL = 0.5  # gaussian: noise std; mask / salt_pepper: fraction of pixels. 0 = plain autoencoder (AE baseline)
+# Architecture (see model.py). The defaults are the course's small encoder and its mirror decoder.
+BACKBONE = "small"  # the encoder of every model: "small" or "resnet18"
+DECODER = "light"  # the DAE decoder: "light" (mirror of the small encoder) or "resnet18" (inverted ResNet-18)
 
 # Hyperparameter search 1 (assignment A2): a full grid over these three DAE
 # hyperparameters. The learning rate stays fixed. train.py does one run per
@@ -68,6 +71,17 @@ MODEL_NAME = "pretrain"
 # Set by --dataset in utils.parse_args. Default is Tiny-ImageNet; cifar100 is the transfer set.
 DATASET = "TinyImageNet"
 LABEL_FRACTION = 1.0  # class-balanced part of train for linear_probe, finetune and supervised: 1.0, 0.1 or 0.01
-TARGET_NUM_EPOCHS = 30  # linear_probe and finetune, with early stopping on val_loss
+TARGET_NUM_EPOCHS = 30  # linear_probe and finetune, with early stopping (see PROTOCOL)
+# How the runs that train a classifier (pretrain_supervise_encoder, linear_probe,
+# finetune) stop and pick their checkpoint. --protocol overrides it.
+#   "acc":  by val_accuracy (max), patience 5, cross-entropy with label smoothing.
+#           Their run folders (and the supervised encoder files) end in "_acc".
+#   "loss": by val_loss (min), patience 3, plain cross-entropy: the first runs.
+# Why "acc": with "loss" the supervised encoder kept epoch 0-1. val_loss rises as
+# soon as the model grows overconfident, while val_accuracy still rises for 2-3
+# more epochs (in 29 of 32 runs). Label smoothing keeps that overconfidence down.
+PROTOCOL = "acc"
+PATIENCE = 5  # "acc": epochs without a better val_accuracy before stopping ("loss": Lightning's default, 3)
+LABEL_SMOOTHING = 0.1  # "acc": the target is 0.9 on the true class and 0.1 spread over all classes ("loss": 0)
 FINETUNE_LEARNING_RATE = 0.0001  # smaller lr, so we don't destroy the pretrained features
 ENCODER_PATH = None  # set by utils.parse_args from the pretrain settings and --encoder (None = random-init encoder)
