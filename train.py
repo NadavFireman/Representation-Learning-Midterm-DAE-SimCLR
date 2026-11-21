@@ -78,15 +78,20 @@ def run(mode):
     callbacks = [MyPrintingCallback(), ColabProgressBar(refresh_rate=20), EpochMetricsCallback()]
     if mode in config.PRETRAIN_MODES:
         callbacks.append(KNNCallback())  # val k-NN every epoch, test k-NN at the end
-    # save_last=True also writes last.ckpt every epoch, to continue after a disconnect.
     checkpoint_dir = os.path.join(logger.log_dir, "checkpoints")
     if mode == "pretrain":
         # Fixed number of epochs, no early stopping. The DAE is judged by its h,
         # not by reconstruction, so the kept epoch is the one with the best val k-NN.
-        callbacks.append(ModelCheckpoint(dirpath=checkpoint_dir, monitor="val_knn_top1", mode="max", save_last=True))
+        callbacks.append(ModelCheckpoint(dirpath=checkpoint_dir, monitor="val_knn_top1", mode="max"))
     else:
         callbacks.append(EarlyStopping(monitor="val_loss"))
-        callbacks.append(ModelCheckpoint(dirpath=checkpoint_dir, monitor="val_loss", mode="min", save_last=True))
+        callbacks.append(ModelCheckpoint(dirpath=checkpoint_dir, monitor="val_loss", mode="min"))
+    # last.ckpt, rewritten every epoch, to continue after a disconnect: a finished run
+    # then reloads its final epoch and stops. save_last=True on the callback above
+    # would rewrite it only when the monitored metric improves, so a finished run
+    # would train again from its best epoch. This callback comes second, so
+    # ckpt_path="best" below still means the monitored one.
+    callbacks.append(ModelCheckpoint(dirpath=checkpoint_dir, filename="last", enable_version_counter=False))
 
     trainer = pl.Trainer(
         logger=logger,
