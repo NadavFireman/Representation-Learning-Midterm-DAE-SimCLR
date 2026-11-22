@@ -122,6 +122,13 @@ class ImageDataModule(pl.LightningDataModule):
         self.val_ds = Subset(train_eval_base, val_idx)
         self.test_ds = test_base
 
+    def class_names(self):
+        """The name of every class, by label: the WordNet ids for Tiny-ImageNet (n01443537 ...),
+        the class names for CIFAR-100. Needs setup() first."""
+        if self.dataset_name == "TinyImageNet":
+            return self.test_ds.hf_split.features["label"].names
+        return self.test_ds.classes
+
     def _dataloader(self, dataset, shuffle):
         return DataLoader(
             dataset,

@@ -261,7 +261,8 @@ class EncoderClassifier(pl.LightningModule):
     freeze_encoder=True trains only the head (linear probe).
     False trains the encoder and the head (fine-tuning).
 
-    Logs top-1 and top-5 accuracy, as the assignment asks.
+    Logs top-1 and top-5 accuracy, as the assignment asks, and on val and test also
+    macro precision, recall, F1 and AUROC; on test also the confusion matrix.
     """
 
     def __init__(self, learning_rate, num_classes, latent_dim, encoder_path=None, freeze_encoder=False,
@@ -290,8 +291,29 @@ class EncoderClassifier(pl.LightningModule):
         # the true class, so the model is not pushed to be 100% sure, and val_loss
         # does not climb from overconfidence while val_accuracy still improves.
         self.loss_fn = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
-        self.accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
-        self.top5_accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes, top_k=5)
+
+        # The metrics. Top-1 and top-5 accuracy are the ones the assignment asks for.
+        # Precision, recall and F1 are macro: one value per class, then their mean, so
+        # every class counts the same. (Val and test have 50 images per class, so the
+        # micro versions would all equal accuracy, and macro recall equals it too.)
+        # AUROC: for each class, how well the scores rank its images above the others
+        # (one-vs-rest), then the mean over the classes.
+        # Each stage gets its own copy, so train, val and test never mix their counts.
+        metrics = torchmetrics.MetricCollection({
+            # average="micro": correct images / all images, as torchmetrics.Accuracy computed before
+            # (the Multiclass classes default to macro).
+            "accuracy": torchmetrics.classification.MulticlassAccuracy(num_classes, average="micro"),
+            "top5_accuracy": torchmetrics.classification.MulticlassAccuracy(num_classes, top_k=5, average="micro"),
+            "precision": torchmetrics.classification.MulticlassPrecision(num_classes, average="macro"),
+            "recall": torchmetrics.classification.MulticlassRecall(num_classes, average="macro"),
+            "f1": torchmetrics.classification.MulticlassF1Score(num_classes, average="macro"),
+            "auroc": torchmetrics.classification.MulticlassAUROC(num_classes, average="macro"),
+        })
+        self.val_metrics = metrics.clone(prefix="val_")  # val_accuracy, val_f1, ...: val_accuracy drives EarlyStopping
+        self.test_metrics = metrics.clone(prefix="test_")
+        self.train_accuracy = torchmetrics.classification.MulticlassAccuracy(num_classes, average="micro")
+        # Rows: the true class, columns: the predicted class. callbacks.ConfusionMatrixCallback saves it after the test.
+        self.test_confusion = torchmetrics.classification.MulticlassConfusionMatrix(num_classes)
 
     def train(self, mode=True):
         super().train(mode)
@@ -305,31 +327,30 @@ class EncoderClassifier(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss, scores, y = self._common_step(batch, batch_idx)
-        accuracy = self.accuracy(scores, y)
+        self.train_accuracy(scores, y)
         self.log_dict(
-            {"train_loss": loss, "train_accuracy": accuracy},
+            {"train_loss": loss, "train_accuracy": self.train_accuracy},
             on_step=True, on_epoch=True, prog_bar=True,
         )
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss, scores, y = self._common_step(batch, batch_idx)
-        accuracy = self.accuracy(scores, y)
-        top5_accuracy = self.top5_accuracy(scores, y)
-        self.log_dict(
-            {"val_loss": loss, "val_accuracy": accuracy, "val_top5_accuracy": top5_accuracy},
-            on_step=False, on_epoch=True, prog_bar=True,
-        )
+        # update() only adds this batch to the counts. Logging the metric objects lets
+        # Lightning compute each one once, over the whole val set, at the end of the epoch.
+        # float(): with 16-mixed the scores are float16, and AUROC's softmax over 200
+        # classes would round many small probabilities to the same value.
+        self.val_metrics.update(scores.float(), y)
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log_dict(self.val_metrics, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
     def test_step(self, batch, batch_idx):
         loss, scores, y = self._common_step(batch, batch_idx)
-        accuracy = self.accuracy(scores, y)
-        top5_accuracy = self.top5_accuracy(scores, y)
-        self.log_dict(
-            {"test_loss": loss, "test_accuracy": accuracy, "test_top5_accuracy": top5_accuracy},
-            on_step=False, on_epoch=True,
-        )
+        self.test_metrics.update(scores.float(), y)  # float(): see validation_step
+        self.test_confusion.update(scores, y)
+        self.log("test_loss", loss, on_step=False, on_epoch=True)
+        self.log_dict(self.test_metrics, on_step=False, on_epoch=True)
         return loss
 
     def _common_step(self, batch, batch_idx):

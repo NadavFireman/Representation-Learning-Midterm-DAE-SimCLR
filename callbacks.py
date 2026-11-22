@@ -59,8 +59,23 @@ class EpochMetricsCallback(Callback):
             return
         self._log_metrics(
             trainer,
-            ["val_loss", "val_accuracy", "val_top5_accuracy", "val_knn_top1", "val_knn_top5"],
+            ["val_loss", "val_accuracy", "val_top5_accuracy", "val_f1", "val_auroc", "val_knn_top1", "val_knn_top5"],
         )
+
+
+class ConfusionMatrixCallback(Callback):
+    """After the test of a classifier: its confusion matrix on the test set, as a CSV,
+    a figure (also in TensorBoard) and the most confused class pairs
+    (analysis.save_confusion_matrix). EncoderClassifier fills it in test_step."""
+
+    def on_test_epoch_end(self, trainer, pl_module):
+        # Imported here, not at the top: analysis.py sets matplotlib to draw into files
+        # only (Agg), and a notebook that imports callbacks would stop showing its plots.
+        from analysis import save_confusion_matrix
+
+        confusion = pl_module.test_confusion.compute()  # [num_classes, num_classes]
+        pl_module.test_confusion.reset()
+        save_confusion_matrix(confusion, trainer.datamodule.class_names(), trainer.logger)
 
 
 class KNNCallback(Callback):
@@ -77,7 +92,10 @@ class KNNCallback(Callback):
         super().__init__()
         # Read config here, when the callback is created, not when this file is imported.
         self.k = k if k is not None else config.KNN_K
-        self.bank_size = bank_size if bank_size is not None else config.KNN_BANK_SIZE
+        if bank_size is None:
+            # A search trial uses the smaller bank (config.SEARCH_KNN_BANK_SIZE); final runs use all of train.
+            bank_size = config.SEARCH_KNN_BANK_SIZE if config.SEARCH else config.KNN_BANK_SIZE
+        self.bank_size = bank_size
 
     def _log_knn(self, trainer, pl_module, split):
         top1, top5 = knn_evaluate(pl_module.encoder, trainer.datamodule, self.k, split, self.bank_size)

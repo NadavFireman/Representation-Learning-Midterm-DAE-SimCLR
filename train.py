@@ -1,16 +1,42 @@
 import json
 import os
+import shutil
 import pandas as pd
 import torch
 import pytorch_lightning as pl
 from datamodule import ImageDataModule
 import config
-from callbacks import MyPrintingCallback, EarlyStopping, ModelCheckpoint, ColabProgressBar, EpochMetricsCallback, KNNCallback
+from callbacks import (MyPrintingCallback, EarlyStopping, ModelCheckpoint, ColabProgressBar, EpochMetricsCallback,
+                       KNNCallback, ConfusionMatrixCallback)
+import yaml
 from pytorch_lightning.loggers import TensorBoardLogger
 from utils import parse_args, build_model, architecture_tag, protocol_tag
 from knn import knn_evaluate
 from analysis import run_analysis
 torch.set_float32_matmul_precision("medium")  # to make lightning happy
+
+# The modes --retest works on: the classifiers (tested again from their best
+# checkpoint) and analysis (no checkpoint, it runs again).
+RETEST_MODES = ("linear_probe", "finetune", "pretrain_supervise_encoder", "analysis")
+# How much a number the run already reported may move in a retest: GPU
+# nondeterminism changes the last digits, a real change in the evaluation more.
+RETEST_TOLERANCE = 0.0005
+
+
+def best_checkpoint(checkpoint_dir):
+    """The checkpoint file a finished run kept as its best.
+
+    trainer.test(ckpt_path="best") only knows it in the process that ran fit.
+    Every checkpoint also stores the state of each callback, and the monitored
+    ModelCheckpoint's state has best_model_path, so last.ckpt knows it too. That
+    path is the one of the machine that trained (Colab), so only its file name is
+    used, inside this run's checkpoints folder.
+    """
+    last = torch.load(os.path.join(checkpoint_dir, "last.ckpt"), map_location="cpu", weights_only=False)
+    for name, state in last["callbacks"].items():
+        if name.startswith("ModelCheckpoint") and state.get("monitor"):  # the last.ckpt callback has no monitor
+            return os.path.join(checkpoint_dir, os.path.basename(state["best_model_path"]))
+    raise FileNotFoundError(f"no monitored ModelCheckpoint in {checkpoint_dir}/last.ckpt")
 
 
 def run(mode):
@@ -39,8 +65,17 @@ def run(mode):
     # does not save that EarlyStopping stopped the run, so an early-stopped run
     # would train more epochs and could replace its test results.
     # Search trials always run again: train.py rewrites their row in sweep_results.csv.
+    # --retest (config.RETEST) is the exception: a finished classifier run is tested
+    # again from its best checkpoint, with no training, to add metrics that were
+    # added to the code after it ran (see the end of this function). analysis has
+    # no checkpoint: it simply runs again.
     results_file = os.path.join(logger.log_dir, "results.json")
-    if os.path.exists(results_file) and not config.SEARCH:
+    retest = config.RETEST and mode in RETEST_MODES and os.path.exists(results_file)
+    if config.RETEST and mode in RETEST_MODES and mode != "analysis" and not retest:
+        # --retest never trains. No results.json here means a wrong flag or --output_dir,
+        # or a run that has not finished: stop, instead of starting a training run.
+        raise FileNotFoundError(f"--retest: {run_name} has no results.json in {logger.log_dir}; nothing to test")
+    if os.path.exists(results_file) and not config.SEARCH and not retest:
         with open(results_file) as f:
             results = json.load(f)
         print(f"{run_name} already finished; its results are in {results_file}")
@@ -54,6 +89,25 @@ def run(mode):
             json.dump(results, f, indent=1)
         return results
 
+    def save_retest_results(new_results, key):
+        """--retest: add the new metrics to results.json, and keep what the run reported.
+
+        The first results.json is kept as results_before_retest.json (once; a second
+        retest keeps that same copy). The number the run already had (key: test_accuracy,
+        or test_knn_top1 for analysis) must come out the same, or nothing is written:
+        a change there means the evaluation changed, not just new metrics.
+        """
+        backup = os.path.join(logger.log_dir, "results_before_retest.json")
+        if not os.path.exists(backup):
+            shutil.copyfile(results_file, backup)
+        with open(backup) as f:
+            old_results = json.load(f)
+        new_results = {k: float(v) for k, v in new_results.items()}
+        if abs(new_results[key] - old_results[key]) > RETEST_TOLERANCE:
+            raise RuntimeError(f"--retest: {run_name} {key} was {old_results[key]:.4f}, now {new_results[key]:.4f}. "
+                               f"results.json is left as it was.")
+        return save_results({**old_results, **new_results})
+
     model = build_model(mode)
 
     # The DAE uses every training image and no labels. The other modes use the
@@ -61,16 +115,26 @@ def run(mode):
     label_fraction = 1.0 if mode == "pretrain" else config.LABEL_FRACTION
     if config.SEARCH:
         num_epochs = config.SWEEP_NUM_EPOCHS  # proxy setting for tuning; full setting for final models only
-    elif mode in config.PRETRAIN_MODES:
-        num_epochs = config.NUM_EPOCHS
+    elif mode == "pretrain":
+        num_epochs = config.NUM_EPOCHS  # the DAE: a fixed number, its checkpoint is chosen by val k-NN
     else:
+        # Every classifier, the supervised encoder too: TARGET_NUM_EPOCHS is only a cap,
+        # EarlyStopping on val_accuracy ends the run sooner.
         num_epochs = config.TARGET_NUM_EPOCHS
 
     # This run's own config file: every value of config.py as this run used it
     # (after the command-line overrides). Lightning's log_hyperparams writes it to
     # hparams.yaml next to the logs, and to the HPARAMS tab of TensorBoard.
-    settings = {name: getattr(config, name) for name in dir(config) if name.isupper()}
-    settings.update(MODE=mode, RUN_NUM_EPOCHS=num_epochs, RUN_LABEL_FRACTION=label_fraction)
+    # A retest keeps the file of the run it tests: those are the settings it trained with.
+    hparams_file = os.path.join(logger.log_dir, "hparams.yaml")
+    if retest and os.path.exists(hparams_file):
+        # utf-8: the paths in it can be Hebrew, and Windows would read it as cp1252.
+        # full_load, as Lightning's own reader: the file holds tuples (PRETRAIN_MODES ...).
+        with open(hparams_file, encoding="utf-8") as f:
+            settings = yaml.full_load(f)
+    else:
+        settings = {name: getattr(config, name) for name in dir(config) if name.isupper()}
+        settings.update(MODE=mode, RUN_NUM_EPOCHS=num_epochs, RUN_LABEL_FRACTION=label_fraction)
     logger.log_hyperparams(settings)
 
     batch_size = config.DAE_BATCH_SIZE if mode == "pretrain" else config.BATCH_SIZE
@@ -100,11 +164,14 @@ def run(mode):
 
     if mode == "analysis":
         # No training: the A5 evidence and the robustness test of the saved (or random) encoder.
-        return save_results(run_analysis(model.encoder, dm, logger))
+        results = run_analysis(model.encoder, dm, logger)
+        return save_retest_results(results, "test_knn_top1") if retest else save_results(results)
 
     callbacks = [MyPrintingCallback(), ColabProgressBar(refresh_rate=20), EpochMetricsCallback()]
     if mode in config.PRETRAIN_MODES:
         callbacks.append(KNNCallback())  # val k-NN every epoch, test k-NN at the end
+    if mode != "pretrain":
+        callbacks.append(ConfusionMatrixCallback())  # a classifier: its test confusion matrix
     checkpoint_dir = os.path.join(logger.log_dir, "checkpoints")
     if mode == "pretrain":
         # Fixed number of epochs, no early stopping. The DAE is judged by its h,
@@ -138,6 +205,12 @@ def run(mode):
         log_every_n_steps=10,  # default is 50: short runs would get no step points
         callbacks=callbacks,
     )
+    if retest:
+        # No fit: test the checkpoint this run kept as its best, and add the new
+        # metrics to its results.json (save_retest_results checks the old numbers).
+        results = trainer.test(model, dm, ckpt_path=best_checkpoint(checkpoint_dir))
+        return save_retest_results(results[0], "test_accuracy")
+
     print(model)
     details = (
         f"Training mode is: {mode}, on {config.DATASET} for {num_epochs} epochs, "

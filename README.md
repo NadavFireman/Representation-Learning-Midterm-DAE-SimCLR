@@ -63,7 +63,8 @@ Other flags:
 | `--decoder` | The DAE decoder: `light` (default) or `resnet18` (inverted ResNet-18). The modes that load a DAE encoder need it too: it is part of the encoder's file name. |
 | `--protocol` | `acc` (default): classifier runs stop on and keep the best `val_accuracy`, with patience 5 and label smoothing 0.1; their folders and the supervised encoder files end in `_acc`. `loss`: the first runs, by `val_loss`. |
 | `--seed` | The training seed. The splits and the label subsets always use `config.SEED`. |
-| `--search` | One trial of the hyperparameter search: proxy setting (8 epochs), no test set. |
+| `--search` | One trial of the hyperparameter search: proxy setting (8 epochs, a k-NN bank of 20,000 images), no test set. |
+| `--retest` | A finished `linear_probe`, `finetune` or `pretrain_supervise_encoder` run: no training, its best checkpoint is tested again and the new metrics are added to its `results.json`; the first `results.json` is kept as `results_before_retest.json`, and if `test_accuracy` comes out different (by more than 0.0005) nothing is written. `analysis` simply runs again (checked on `test_knn_top1`). A run with no `results.json` is an error, never a training run. |
 | `--output_dir` | Where the logs, checkpoints and encoders go. |
 
 Examples:
@@ -116,6 +117,21 @@ Chosen by validation k-NN accuracy, not by reconstruction error, in two searches
 | `knn.py` | k-NN evaluation. |
 | `callbacks.py` | Per-epoch k-NN, per-epoch metrics, progress bar. |
 | `analysis.py` | Per-class accuracy, t-SNE, retrieval and robustness. |
+
+## Metrics and epochs
+
+- Classifiers (`linear_probe`, `finetune`, `pretrain_supervise_encoder`) log top-1 and
+  top-5 accuracy, and on val and test also macro precision, recall, F1 and AUROC
+  (torchmetrics). After the test they save the confusion matrix (`confusion_matrix.csv`,
+  `.png`) and the 20 most confused class pairs (`most_confused.csv`). `analysis` saves
+  the same for the k-NN (`knn_*`).
+- Every classifier stops on `val_accuracy` (patience 5), with a cap of 100 epochs. The
+  DAE trains a fixed 12 epochs and keeps the epoch with the best val k-NN.
+- `finetune --encoder supervised --dataset cifar100 --label_fraction f` loads the
+  supervised encoder trained on the same fraction f of the Tiny-ImageNet labels.
+- The runs made before the cap was raised (30 epochs, 12 for the supervised encoder)
+  used 2 data-loading workers; a rerun of them now uses up to 8, so its random flips,
+  and the last digits of its numbers, differ.
 
 ## Logs
 

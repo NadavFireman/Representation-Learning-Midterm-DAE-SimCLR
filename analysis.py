@@ -4,6 +4,9 @@ No training. Everything is computed on the test set with the k-NN of the
 evaluation protocol (k=20, cosine, similarity-weighted vote, the training images
 as the memory bank), so the numbers match the knn mode:
     per_class_accuracy.csv   k-NN accuracy of every class: where the representation fails
+    knn_confusion_matrix.*   the k-NN confusion matrix, and knn_most_confused.csv
+                             (the class pairs it mixes up most); macro precision,
+                             recall, F1 and AUROC go to results.json
     tsne.png                 t-SNE of h for 10 classes of the test set
     retrieval.png            8 test images and their 8 nearest training images
     robustness.csv / .png    k-NN accuracy when the test images are corrupted
@@ -14,11 +17,13 @@ import os
 import matplotlib
 matplotlib.use("Agg")  # no screen on Colab: draw into files
 import matplotlib.pyplot as plt
+from matplotlib.colors import PowerNorm
+import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
 from sklearn.manifold import TSNE
-from torchmetrics.functional import accuracy
+from torchmetrics.functional import accuracy, auroc, confusion_matrix, f1_score, precision, recall
 from torchvision.transforms.v2 import functional as TF
 
 import config
@@ -65,11 +70,58 @@ def extract_corrupted(encoder, loader, name, severity):
     return torch.cat(feats), torch.cat(labels)
 
 
-def class_names(dm):
-    """Tiny-ImageNet: the WordNet ids (n01443537 ...). CIFAR-100: the class names."""
-    if config.DATASET == "TinyImageNet":
-        return dm.test_ds.hf_split.features["label"].names
-    return dm.test_ds.classes
+def knn_metrics(scores, y, num_classes, prefix="test_knn_"):
+    """Macro precision, recall, F1 and AUROC of the k-NN votes, as EncoderClassifier logs them.
+
+    scores are the summed cosine similarities of the k neighbors of each class. For
+    AUROC they become each class's share of the votes (negative similarities count as
+    0), so every row sums to 1 and the scores of different images are on one scale.
+    torchmetrics would otherwise apply a softmax, which changes that scale.
+    """
+    shares = scores.clamp(min=0)
+    shares = shares / shares.sum(dim=1, keepdim=True).clamp(min=1e-12)
+    args = dict(task="multiclass", num_classes=num_classes, average="macro")
+    return {
+        f"{prefix}precision": precision(scores, y, **args).item(),
+        f"{prefix}recall": recall(scores, y, **args).item(),
+        f"{prefix}f1": f1_score(scores, y, **args).item(),
+        f"{prefix}auroc": auroc(shares, y, **args).item(),
+    }
+
+
+def save_confusion_matrix(confusion, names, logger, prefix="", n_pairs=20):
+    """Save a confusion matrix [num_classes, num_classes] (rows: true class, columns:
+    predicted class) in the run's folder:
+        <prefix>confusion_matrix.csv  the counts, with the class names
+        <prefix>confusion_matrix.png  each row divided by its class size (also in TensorBoard)
+        <prefix>most_confused.csv     the n_pairs largest off-diagonal cells: which
+                                      classes the representation mixes up (A5)
+    """
+    confusion = confusion.cpu().numpy()
+    pd.DataFrame(confusion, index=names, columns=names).to_csv(
+        os.path.join(logger.log_dir, f"{prefix}confusion_matrix.csv")
+    )
+    class_size = confusion.sum(axis=1, keepdims=True).clip(min=1)
+    mistakes = confusion.copy()
+    np.fill_diagonal(mistakes, 0)  # only the mistakes
+    largest = np.argsort(mistakes, axis=None)[::-1][:n_pairs]  # flat indices, largest first
+    rows = [
+        {"true": names[i], "predicted": names[j], "count": int(mistakes[i, j]),
+         "share_of_true_class": mistakes[i, j] / class_size[i, 0]}
+        for i, j in zip(*np.unravel_index(largest, mistakes.shape))
+        if mistakes[i, j] > 0  # fewer than n_pairs mistakes: no rows of pairs that were never confused
+    ]
+    pd.DataFrame(rows).to_csv(os.path.join(logger.log_dir, f"{prefix}most_confused.csv"), index=False)
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    # PowerNorm: with about 10% accuracy almost every cell is below 0.05, and a linear
+    # 0-1 scale draws them all in one color. gamma 0.3 spreads the small shares out.
+    image = ax.imshow(confusion / class_size, cmap="viridis", norm=PowerNorm(gamma=0.3, vmin=0, vmax=1))
+    fig.colorbar(image, ax=ax, label="share of the true class")
+    ax.set_xlabel("predicted class")
+    ax.set_ylabel("true class")
+    ax.set_title(f"Confusion matrix on test ({len(names)} classes)")
+    save_figure(fig, logger, f"{prefix}confusion_matrix")
 
 
 def to_image(x):
@@ -90,7 +142,7 @@ def run_analysis(encoder, dm, logger, n_tsne_classes=10, n_queries=8, n_neighbor
     dm.setup("test")
     encoder.to("cuda" if torch.cuda.is_available() else "cpu").eval()
     os.makedirs(logger.log_dir, exist_ok=True)
-    names = class_names(dm)
+    names = dm.class_names()
     k, num_classes = config.KNN_K, dm.num_classes
 
     bank_h, bank_y = extract_features(encoder, dm.bank_dataloader())
@@ -100,6 +152,11 @@ def run_analysis(encoder, dm, logger, n_tsne_classes=10, n_queries=8, n_neighbor
         "test_knn_top1": accuracy(scores, test_y, task="multiclass", num_classes=num_classes).item(),
         "test_knn_top5": accuracy(scores, test_y, task="multiclass", num_classes=num_classes, top_k=5).item(),
     }
+    results.update(knn_metrics(scores, test_y, num_classes))
+
+    # 0. The confusion matrix of the k-NN: which classes it mixes up.
+    save_confusion_matrix(confusion_matrix(scores, test_y, task="multiclass", num_classes=num_classes),
+                          names, logger, prefix="knn_")
 
     # 1. Per-class k-NN accuracy: which classes the representation fails on.
     per_class = accuracy(scores, test_y, task="multiclass", num_classes=num_classes, average=None)

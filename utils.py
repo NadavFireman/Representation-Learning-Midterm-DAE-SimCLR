@@ -143,6 +143,13 @@ def parse_args():
         help="One trial of the hyperparameter search: proxy setting, no test, one row in sweep_results.csv.",
     )
     parser.add_argument(
+        "--retest",
+        action="store_true",
+        help="A finished linear_probe, finetune or pretrain_supervise_encoder run: no training, "
+        "test its best checkpoint again and add the new metrics to its results.json "
+        "(the first one is kept as results_before_retest.json). analysis runs again in full.",
+    )
+    parser.add_argument(
         "--output_dir",
         default=config.OUTPUT_DIR,
         help="Where logs, checkpoints, encoders and sweep_results.csv go. On Colab: a Google Drive folder.",
@@ -159,6 +166,7 @@ def parse_args():
     config.PROTOCOL = args.protocol
     config.TRAIN_SEED = args.seed
     config.SEARCH = args.search
+    config.RETEST = args.retest
     # pretrain writes the encoder (named after the dataset it trains on),
     # the other modes read one (named after --pretrain_dataset).
     if args.mode == "pretrain":
