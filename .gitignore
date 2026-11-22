@@ -6,6 +6,9 @@ dataset/
 # Run outputs: logs, checkpoints, saved encoders, search results
 tb_logs/
 lightning_logs/
+rl_midterm/
+rl_midterm_experiments/
+events.out.tfevents.*
 encoders/
 *.ckpt
 *.pt
