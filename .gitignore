@@ -8,6 +8,7 @@ tb_logs/
 lightning_logs/
 rl_midterm/
 rl_midterm_experiments/
+rl_midterm_checks/
 events.out.tfevents.*
 encoders/
 *.ckpt

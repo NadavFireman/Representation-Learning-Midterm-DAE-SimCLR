@@ -99,6 +99,13 @@ def parse_args():
     parser.add_argument("--latent_dim", type=int, default=config.LATENT_DIM)
     parser.add_argument("--label_fraction", type=float, default=config.LABEL_FRACTION, help="1.0, 0.1 or 0.01")
     parser.add_argument(
+        "--num_epochs",
+        type=int,
+        default=config.NUM_EPOCHS,
+        help="Epochs of the DAE (pretrain), fixed, no early stopping. Default: config.NUM_EPOCHS. "
+        "The classifiers use config.TARGET_NUM_EPOCHS as a cap instead.",
+    )
+    parser.add_argument(
         "--backbone",
         choices=BACKBONES,
         default=config.BACKBONE,
@@ -161,6 +168,7 @@ def parse_args():
     config.NOISE_LEVEL = args.noise_level
     config.LATENT_DIM = args.latent_dim
     config.LABEL_FRACTION = args.label_fraction
+    config.NUM_EPOCHS = args.num_epochs
     config.BACKBONE = args.backbone
     config.DECODER = args.decoder
     config.PROTOCOL = args.protocol

@@ -62,6 +62,7 @@ Other flags:
 | `--backbone` | `small` (default, the course encoder) or `resnet18`. The modes that load an encoder need the backbone it was trained with. |
 | `--decoder` | The DAE decoder: `light` (default) or `resnet18` (inverted ResNet-18). The modes that load a DAE encoder need it too: it is part of the encoder's file name. |
 | `--protocol` | `acc` (default): classifier runs stop on and keep the best `val_accuracy`, with patience 5 and label smoothing 0.1; their folders and the supervised encoder files end in `_acc`. `loss`: the first runs, by `val_loss`. |
+| `--num_epochs` | Epochs of the DAE (`pretrain`), default `config.NUM_EPOCHS` (12). The classifiers have their own cap, `TARGET_NUM_EPOCHS`. |
 | `--seed` | The training seed. The splits and the label subsets always use `config.SEED`. |
 | `--search` | One trial of the hyperparameter search: proxy setting (8 epochs, a k-NN bank of 20,000 images), no test set. |
 | `--retest` | A finished `linear_probe`, `finetune` or `pretrain_supervise_encoder` run: no training, its best checkpoint is tested again and the new metrics are added to its `results.json`; the first `results.json` is kept as `results_before_retest.json`, and if `test_accuracy` comes out different (by more than 0.0005) nothing is written. `analysis` simply runs again (checked on `test_knn_top1`). A run with no `results.json` is an error, never a training run. |
