@@ -75,6 +75,14 @@ def run(mode):
         # --retest never trains. No results.json here means a wrong flag or --output_dir,
         # or a run that has not finished: stop, instead of starting a training run.
         raise FileNotFoundError(f"--retest: {run_name} has no results.json in {logger.log_dir}; nothing to test")
+    if retest:
+        # A run that already has the new metrics (it ran after they were added, or was
+        # retested before) is not tested again: a loop restarted after a disconnect skips it.
+        with open(results_file) as f:
+            results = json.load(f)
+        if ("test_knn_auroc" if mode == "analysis" else "test_auroc") in results:
+            print(f"{run_name} already has the new metrics; its results are in {results_file}")
+            return results
     if os.path.exists(results_file) and not config.SEARCH and not retest:
         with open(results_file) as f:
             results = json.load(f)
