@@ -1,16 +1,11 @@
 """--mode analysis: the evidence of A5 and the robustness test of A4 for one frozen encoder.
 
-No training. Everything is computed on the test set with the k-NN of the
-evaluation protocol (k=20, cosine, similarity-weighted vote, the training images
-as the memory bank), so the numbers match the knn mode:
-    per_class_accuracy.csv   k-NN accuracy of every class: where the representation fails
+No training. The k-NN of the evaluation protocol on the test set gives:
+    per_class_accuracy.csv   k-NN accuracy of every class
     knn_confusion_matrix.*   the k-NN confusion matrix, and knn_most_confused.csv
-                             (the class pairs it mixes up most); macro precision,
-                             recall, F1 and AUROC go to results.json
     tsne.png                 t-SNE of h for 10 classes of the test set
     retrieval.png            8 test images and their 8 nearest training images
     robustness.csv / .png    k-NN accuracy when the test images are corrupted
-The figures also go to the run's TensorBoard (IMAGES tab).
 """
 import os
 
@@ -30,11 +25,9 @@ import config
 from augmentations import TINY_IMAGENET_MEAN, TINY_IMAGENET_STD
 from knn import extract_features, knn_scores
 
-# The robustness test (A4 bonus): the bank stays clean, only the test images are
-# corrupted, with corruptions the DAE did not train on (it trained on salt_pepper).
-# Each at 3 severities, from mild to strong. Gaussian noise is in units of the
-# per-channel std, as the DAE's noise; blur is the sigma of the kernel in pixels;
-# occlusion is the side of a gray square in the middle of the image, as a fraction of 64.
+# The robustness test (A4 bonus): the bank stays clean, the test images are corrupted
+# with corruptions the DAE did not train on, each at 3 severities.
+# gaussian_noise: std; blur: sigma in pixels; occlusion: side of a gray square, as a fraction of 64.
 CORRUPTIONS = {
     "gaussian_noise": (0.25, 0.5, 1.0),
     "blur": (0.5, 1.0, 2.0),
@@ -65,19 +58,15 @@ def extract_corrupted(encoder, loader, name, severity):
     generator = torch.Generator(device=device).manual_seed(config.SEED)
     feats, labels = [], []
     for x, y in loader:
-        feats.append(encoder(corrupt(x.to(device), name, severity, generator)).float().cpu())
-        labels.append(y)
+        with torch.autocast(device.type, enabled=device.type == "cuda"):
+            feats.append(encoder(corrupt(x.to(device), name, severity, generator)).float())
+        labels.append(y.to(device))
     return torch.cat(feats), torch.cat(labels)
 
 
 def knn_metrics(scores, y, num_classes, prefix="test_knn_"):
-    """Macro precision, recall, F1 and AUROC of the k-NN votes, as EncoderClassifier logs them.
-
-    scores are the summed cosine similarities of the k neighbors of each class. For
-    AUROC they become each class's share of the votes (negative similarities count as
-    0), so every row sums to 1 and the scores of different images are on one scale.
-    torchmetrics would otherwise apply a softmax, which changes that scale.
-    """
+    """Macro precision, recall, F1 and AUROC of the k-NN votes.
+    For AUROC the scores become each class's share of the votes, so every row sums to 1."""
     shares = scores.clamp(min=0)
     shares = shares / shares.sum(dim=1, keepdim=True).clamp(min=1e-12)
     args = dict(task="multiclass", num_classes=num_classes, average="macro")
@@ -89,13 +78,19 @@ def knn_metrics(scores, y, num_classes, prefix="test_knn_"):
     }
 
 
+def log_table(logger, name, table):
+    """A pandas table to a CSV in the run folder and to TensorBoard's TEXT tab."""
+    table.to_csv(os.path.join(logger.log_dir, f"{name}.csv"), index=False)
+    rows = ["| " + " | ".join(map(str, table.columns)) + " |", "|" + "---|" * len(table.columns)]
+    rows += ["| " + " | ".join(f"{v:.4f}" if isinstance(v, float) else str(v) for v in row) + " |" for row in table.itertuples(index=False)]
+    logger.experiment.add_text(name, "\n".join(rows))
+
+
 def save_confusion_matrix(confusion, names, logger, prefix="", n_pairs=20):
-    """Save a confusion matrix [num_classes, num_classes] (rows: true class, columns:
-    predicted class) in the run's folder:
+    """Save a confusion matrix [num_classes, num_classes] (rows: true, columns: predicted):
         <prefix>confusion_matrix.csv  the counts, with the class names
-        <prefix>confusion_matrix.png  each row divided by its class size (also in TensorBoard)
-        <prefix>most_confused.csv     the n_pairs largest off-diagonal cells: which
-                                      classes the representation mixes up (A5)
+        <prefix>confusion_matrix.png  each row divided by its class size
+        <prefix>most_confused.csv     the n_pairs largest off-diagonal cells
     """
     confusion = confusion.cpu().numpy()
     pd.DataFrame(confusion, index=names, columns=names).to_csv(
@@ -109,13 +104,12 @@ def save_confusion_matrix(confusion, names, logger, prefix="", n_pairs=20):
         {"true": names[i], "predicted": names[j], "count": int(mistakes[i, j]),
          "share_of_true_class": mistakes[i, j] / class_size[i, 0]}
         for i, j in zip(*np.unravel_index(largest, mistakes.shape))
-        if mistakes[i, j] > 0  # fewer than n_pairs mistakes: no rows of pairs that were never confused
+        if mistakes[i, j] > 0  # skip pairs that were never confused
     ]
-    pd.DataFrame(rows).to_csv(os.path.join(logger.log_dir, f"{prefix}most_confused.csv"), index=False)
+    log_table(logger, f"{prefix}most_confused", pd.DataFrame(rows, columns=["true", "predicted", "count", "share_of_true_class"]))
 
     fig, ax = plt.subplots(figsize=(7, 6))
-    # PowerNorm: with about 10% accuracy almost every cell is below 0.05, and a linear
-    # 0-1 scale draws them all in one color. gamma 0.3 spreads the small shares out.
+    # PowerNorm (gamma 0.3) spreads the small shares out; on a linear scale they are one color.
     image = ax.imshow(confusion / class_size, cmap="viridis", norm=PowerNorm(gamma=0.3, vmin=0, vmax=1))
     fig.colorbar(image, ax=ax, label="share of the true class")
     ax.set_xlabel("predicted class")
@@ -154,29 +148,29 @@ def run_analysis(encoder, dm, logger, n_tsne_classes=10, n_queries=8, n_neighbor
     }
     results.update(knn_metrics(scores, test_y, num_classes))
 
-    # 0. The confusion matrix of the k-NN: which classes it mixes up.
+    # 0. The confusion matrix of the k-NN.
     save_confusion_matrix(confusion_matrix(scores, test_y, task="multiclass", num_classes=num_classes),
                           names, logger, prefix="knn_")
 
-    # 1. Per-class k-NN accuracy: which classes the representation fails on.
+    # 1. Per-class k-NN accuracy.
     per_class = accuracy(scores, test_y, task="multiclass", num_classes=num_classes, average=None)
-    per_class = pd.DataFrame({"class": names, "accuracy": per_class.numpy()}).sort_values("accuracy")
-    per_class.to_csv(os.path.join(logger.log_dir, "per_class_accuracy.csv"), index=False)
+    per_class = pd.DataFrame({"class": names, "accuracy": per_class.cpu().numpy()}).sort_values("accuracy")
+    log_table(logger, "per_class_accuracy", per_class)
     print("Worst classes:\n", per_class.head(10).to_string(index=False))
     print("Best classes:\n", per_class.tail(10).to_string(index=False))
 
-    # 2. t-SNE of h (L2-normalized, as the k-NN sees it) for the first n_tsne_classes classes.
+    # 2. t-SNE of the L2-normalized h, for the first n_tsne_classes classes.
     keep = test_y < n_tsne_classes
     points = TSNE(n_components=2, init="pca", random_state=config.SEED).fit_transform(
-        F.normalize(test_h[keep], dim=1).numpy()
+        F.normalize(test_h[keep], dim=1).cpu().numpy()
     )
     fig, ax = plt.subplots(figsize=(7, 6))
-    scatter = ax.scatter(points[:, 0], points[:, 1], c=test_y[keep].numpy(), cmap="tab10", s=10)
+    scatter = ax.scatter(points[:, 0], points[:, 1], c=test_y[keep].cpu().numpy(), cmap="tab10", s=10)
     ax.legend(scatter.legend_elements()[0], names[:n_tsne_classes], fontsize=7, loc="best")
     ax.set_title(f"t-SNE of h, {n_tsne_classes} test classes of {config.DATASET}")
     save_figure(fig, logger, "tsne")
 
-    # 3. Retrieval: test queries (one from each of n_queries classes) and their nearest training images.
+    # 3. Retrieval: test queries and their nearest training images.
     queries = [int((test_y == c).nonzero()[0]) for c in range(0, num_classes, num_classes // n_queries)][:n_queries]
     sim = F.normalize(test_h[queries], dim=1) @ F.normalize(bank_h, dim=1).T  # [n_queries, N_bank]
     nearest = sim.topk(n_neighbors, dim=1).indices
@@ -206,7 +200,7 @@ def run_analysis(encoder, dm, logger, n_tsne_classes=10, n_queries=8, n_neighbor
             rows.append({"corruption": name, "severity": severity, "test_knn_top1": top1})
             results[f"robust_{name}_{severity}"] = top1
     robustness = pd.DataFrame(rows)
-    robustness.to_csv(os.path.join(logger.log_dir, "robustness.csv"), index=False)
+    log_table(logger, "robustness", robustness)
     print(robustness.to_string(index=False))
     fig, ax = plt.subplots(figsize=(6, 4))
     for name, severities in CORRUPTIONS.items():
@@ -218,5 +212,5 @@ def run_analysis(encoder, dm, logger, n_tsne_classes=10, n_queries=8, n_neighbor
     save_figure(fig, logger, "robustness")
 
     logger.log_metrics(results)
-    logger.save()  # writes hparams.yaml (no Trainer here to do it)
+    logger.save()  # writes hparams.yaml
     return results

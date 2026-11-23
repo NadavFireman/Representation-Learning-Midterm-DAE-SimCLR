@@ -12,22 +12,32 @@ data is a LightningDataModule (`datamodule.py`), and every run is one call of
 
 ### On Colab (as used for the report)
 
-Open `colab_train.ipynb` in Colab with a GPU runtime and run the cells in order:
+Two notebooks, in this order, each in Colab with a GPU runtime (L4 or A100):
+
+- `colab_tuning.ipynb`: the hyperparameters of the classifiers, on val only, on 10% of the
+  labels. Three grids, one after the other: learning (learning rate, the head's learning
+  rate, batch size), regularization (dropout, augmentation, label smoothing), then the
+  optimizer (AdamW, Adam, NAdam, RAdam, SGD), its weight decay and, for the supervised
+  encoder, the activation (ReLU, LeakyReLU, GELU, SiLU, Mish). In each, one hyperparameter at a time, 5 values, the others fixed at what was
+  chosen so far; a value replaces the current one only if it is better than the seed noise.
+  For CNN-3 fine-tuning and supervised, and ResNet-18 fine-tuning, linear probe and
+  supervised. The choices go to `midterm_runs/tuning_choice.json`.
+- `colab_final.ipynb`: every final run, with those choices. Its cells:
 
 1. Clone the repository (or pull it, if the runtime already has it).
 2. Install the requirements and check the GPU.
-3. Mount Google Drive. Every output (logs, checkpoints, encoders) goes there, so a
-   disconnect loses nothing. After a disconnect, run the cells again: an unfinished
-   run continues from its own `last.ckpt`, and a finished one (it has `results.json`
-   in its folder) prints its results and is skipped.
-4. Start TensorBoard.
-5. Run one `train.py` command, or
-6. run all the runs of Part A, one after the other (43 runs).
+3. Mount Google Drive. Every output (logs, checkpoints, encoders) goes to
+   `midterm_runs` there, so a disconnect loses nothing. After a disconnect, run
+   the cells again: an unfinished run continues from its own `last.ckpt`, and a
+   finished one (it has `results.json` in its folder) prints its results and is skipped.
+4. Start TensorBoard: all the runs in one view.
+5. Run the groups: (1) CNN-3, the course's small encoder, (2) ResNet-18 with full
+   fine-tuning, (3) ResNet-18 with partial fine-tuning (`--finetune_from layer3`), (4) seeds
+   1 and 2 of group 1. Groups 1+4 and 2+3 can run at the same time in two runtimes.
+6. The results of every run, as one table.
 
-`colab_resnet.ipynb` (L4 GPU) runs the same protocol with a ResNet-18 encoder
-(`--backbone resnet18`): stage 1 compares two DAE decoders, the light one and an
-inverted ResNet-18 (`--decoder resnet18`); stage 2 runs the full protocol with the
-chosen decoder.
+`history/` keeps the earlier notebooks, among them `colab_checks.ipynb`: the checks made
+before the final runs (the AE and the DAE for 30 epochs, the new metrics on the GPU).
 
 ### Locally
 
@@ -59,13 +69,18 @@ Other flags:
 | `--dataset` | `tinyimagenet`, or `cifar100` for transfer. |
 | `--label_fraction` | `1.0`, `0.1` or `0.01`: a class-balanced share of the labels, the same images for every model. |
 | `--noise_type`, `--noise_level`, `--latent_dim` | The DAE hyperparameters. |
-| `--backbone` | `small` (default, the course encoder) or `resnet18`. The modes that load an encoder need the backbone it was trained with. |
+| `--backbone` | `small` (default, CNN-3, the course encoder) or `resnet18`. The modes that load an encoder need the backbone it was trained with. |
 | `--decoder` | The DAE decoder: `light` (default) or `resnet18` (inverted ResNet-18). The modes that load a DAE encoder need it too: it is part of the encoder's file name. |
-| `--protocol` | `acc` (default): classifier runs stop on and keep the best `val_accuracy`, with patience 5 and label smoothing 0.1; their folders and the supervised encoder files end in `_acc`. `loss`: the first runs, by `val_loss`. |
+| `--finetune_from` | `finetune` with `--backbone resnet18` only: partial fine-tuning. The encoder layers before this one (`layer1` to `layer4`, or `fc`) stay frozen, with their BatchNorm statistics; it and the layers after it train with the head. The run folder gets `finetune-from-<layer>`. |
+| `--lr`, `--head_lr_mult`, `--batch_size`, `--wd` | The classifiers' optimization: learning rate (default `FINETUNE_LEARNING_RATE` for `finetune`, `LEARNING_RATE` otherwise), the head's learning rate as a multiple of it, batch size, AdamW weight decay (0 = Adam). |
+| `--dropout`, `--augment`, `--label_smoothing` | The classifiers' regularization: share of h zeroed before the head in training (`nn.Dropout`), the training augmentation (`none`, `flip`, `crop`, `crop_rotate`, `crop_jitter`; `augmentations.AUGMENTS`), label smoothing. The DAE always uses `flip`. |
+| `--optimizer` | The classifiers' optimizer: `adamw` (default), `adam`, `nadam`, `radam` or `sgd` (Nesterov momentum 0.9). |
+| `--activation` | The supervised encoder's activation: `relu`, `leaky_relu`, `gelu`, `silu`, `mish` (default: the backbone's own, GELU for CNN-3, ReLU for ResNet-18). A supervised encoder trained with one is saved with its name in the file, and is loaded with the same flag. The DAE encoders keep the activation they were pretrained with. |
+| `--max_rounds` | Cap of a classifier, in rounds (default 100). A round is as many training images as 100% of the labels, so 1% validates every 100 epochs and 10% every 10: every label fraction gets the same budget and the same patience. |
+| `--tune` | A tuning run: chosen by val accuracy, so no test and no test curve; the folder has `tune` instead of `final`. |
 | `--num_epochs` | Epochs of the DAE (`pretrain`), default `config.NUM_EPOCHS` (12). The classifiers have their own cap, `TARGET_NUM_EPOCHS`. |
 | `--seed` | The training seed. The splits and the label subsets always use `config.SEED`. |
 | `--search` | One trial of the hyperparameter search: proxy setting (8 epochs, a k-NN bank of 20,000 images), no test set. |
-| `--retest` | A finished `linear_probe`, `finetune` or `pretrain_supervise_encoder` run: no training, its best checkpoint is tested again and the new metrics are added to its `results.json`; the first `results.json` is kept as `results_before_retest.json`, and if `test_accuracy` comes out different (by more than 0.0005) nothing is written. `analysis` simply runs again (checked on `test_knn_top1`). A run with no `results.json` is an error, never a training run. |
 | `--output_dir` | Where the logs, checkpoints and encoders go. |
 
 Examples:
@@ -100,9 +115,9 @@ Chosen by validation k-NN accuracy, not by reconstruction error, in two searches
 
 ## Hyperparameter search
 
-- `colab_experiments.ipynb`: search 1, staged grids over the corruption, its level,
+- `history/colab_experiments.ipynb`: search 1, staged grids over the corruption, its level,
   `latent_dim`, learning rate, batch size and more (run on an A100).
-- `colab_search2.ipynb`: search 2, five grids of 2 to 4 hyperparameters each, repeated
+- `history/colab_search2.ipynb`: search 2, five grids of 2 to 4 hyperparameters each, repeated
   until no grid changes the best settings, then the top 3 with two more seeds (run on an L4).
 
 ## Files
@@ -110,6 +125,7 @@ Chosen by validation k-NN accuracy, not by reconstruction error, in two searches
 | File | Contents |
 |---|---|
 | `train.py` | One run: builds the model and the data, trains, validates and tests. |
+| `run_info.py` | The run folder name (date, time, model, what) and `run_info.txt`. |
 | `config.py` | All the settings. |
 | `utils.py` | Command-line flags, encoder file names, building the model for each mode. |
 | `model.py` | The encoders (small, ResNet-18), the decoders (light, inverted ResNet-18), the DAE, the classifier (linear probe and fine-tuning) and the supervised encoder. |
@@ -118,6 +134,8 @@ Chosen by validation k-NN accuracy, not by reconstruction error, in two searches
 | `knn.py` | k-NN evaluation. |
 | `callbacks.py` | Per-epoch k-NN, per-epoch metrics, progress bar. |
 | `analysis.py` | Per-class accuracy, t-SNE, retrieval and robustness. |
+| `colab_tuning.ipynb` | Launcher: the classifier hyperparameters, three grids on val. |
+| `colab_final.ipynb` | Launcher: every final run, with the tuning's choices. |
 
 ## Metrics and epochs
 
@@ -126,19 +144,28 @@ Chosen by validation k-NN accuracy, not by reconstruction error, in two searches
   (torchmetrics). After the test they save the confusion matrix (`confusion_matrix.csv`,
   `.png`) and the 20 most confused class pairs (`most_confused.csv`). `analysis` saves
   the same for the k-NN (`knn_*`).
-- Every classifier stops on `val_accuracy` (patience 5), with a cap of 100 epochs. The
-  DAE trains a fixed 12 epochs and keeps the epoch with the best val k-NN.
+- Every run that trains (not `--search`) also scores the test set after every epoch,
+  with the same metrics, and k-NN for the encoders (`config.TEST_CURVE`). TensorBoard
+  shows them as `epoch/test_*`, next to `epoch/train_*` and `epoch/val_*`. Only val
+  chooses the checkpoint and stops a run, so the test curve is for plots only and
+  the test numbers stay final numbers.
+- Every classifier stops on `val_accuracy` after 5 rounds with no better one, with a cap
+  of 100 rounds, and logs its calibration error (ECE) too. The DAE trains a fixed number of epochs (`--num_epochs`, default 12) and
+  keeps the epoch with the best val k-NN.
 - `finetune --encoder supervised --dataset cifar100 --label_fraction f` loads the
   supervised encoder trained on the same fraction f of the Tiny-ImageNet labels.
-- The runs made before the cap was raised (30 epochs, 12 for the supervised encoder)
-  used 2 data-loading workers; a rerun of them now uses up to 8, so its random flips,
-  and the last digits of its numbers, differ.
 
 ## Logs
 
-Every run writes TensorBoard logs to `<output_dir>/tb_logs/<run name>/`, with its
-settings in `hparams.yaml`. To view them:
+Every run writes to its own folder in `<output_dir>`:
+`date<DDMMYYYY>_time<HHMMSS>_<model>_final_<stage>_<what>`, for example
+`date23112026_time101500_ResNet18_final_finetune_DAE_on_TinyImageNet_10pct`. The date and
+time are those of its first start; after a disconnect the run finds the same folder and
+continues. The folder holds the TensorBoard logs, every setting (`hparams.yaml`), the
+results (`results.json`) and `run_info.txt`: what the run is, its hyperparameters, epochs,
+results, start and end time and training time (also in TensorBoard's TEXT tab). The
+encoders go to `<output_dir>/encoders`. To view the logs:
 
 ```bash
-tensorboard --logdir <output_dir>/tb_logs
+tensorboard --logdir <output_dir>
 ```
