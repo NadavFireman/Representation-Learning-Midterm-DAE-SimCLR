@@ -14,13 +14,17 @@ ACTIVATIONS = {"relu": nn.ReLU, "leaky_relu": nn.LeakyReLU, "gelu": nn.GELU, "si
 # --optimizer of the classifiers. SGD with Nesterov momentum; the others are Adam variants.
 OPTIMIZERS = {"adamw": optim.AdamW, "adam": optim.Adam, "nadam": optim.NAdam, "radam": optim.RAdam,
               "sgd": lambda groups, **kw: optim.SGD(groups, momentum=0.9, nesterov=True, **kw)}
+# --noise_type of the DAE; patch_mask (MAE) and block (context encoder) hide regions, not pixels
+NOISE_TYPES = ("gaussian", "mask", "salt_pepper", "patch_mask", "block")
+SCHEDULERS = ("none", "cosine")  # --scheduler of the DAE
 
 
-def build_encoder(latent_dim, backbone="small", activation=None):
+def build_encoder(latent_dim, backbone="small", activation=None, channels=(32, 64)):
     """The encoder f_theta: [B, 3, 64, 64] -> h [B, latent_dim].
 
     "small": the encoder of the lec4 SimCLR class (the assignment's backbone), for 3x64x64
-    images. GELU instead of ReLU: chosen by the search. "resnet18": build_resnet18_encoder.
+    images. GELU instead of ReLU: chosen by the search. channels: the output channels of its
+    two conv layers. "resnet18": build_resnet18_encoder.
     activation: one of ACTIVATIONS in place of the backbone's own.
     """
     if backbone == "resnet18":
@@ -29,13 +33,14 @@ def build_encoder(latent_dim, backbone="small", activation=None):
             swap_activation(encoder, ACTIVATIONS[activation])
         return encoder
     act = ACTIVATIONS[activation or "gelu"]
+    c1, c2 = channels
     return nn.Sequential(
-        nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),  # [B, 3, 64, 64] -> [B, 32, 32, 32]
-        act(),  # [B, 32, 32, 32] -> [B, 32, 32, 32]
-        nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # [B, 32, 32, 32] -> [B, 64, 16, 16]
-        act(),  # [B, 64, 16, 16] -> [B, 64, 16, 16]
-        nn.Flatten(),  # [B, 64, 16, 16] -> [B, 16384]
-        nn.Linear(64 * 16 * 16, latent_dim),  # [B, 16384] -> [B, latent_dim]
+        nn.Conv2d(3, c1, kernel_size=3, stride=2, padding=1),  # [B, 3, 64, 64] -> [B, c1, 32, 32]
+        act(),  # [B, c1, 32, 32] -> [B, c1, 32, 32]
+        nn.Conv2d(c1, c2, kernel_size=3, stride=2, padding=1),  # [B, c1, 32, 32] -> [B, c2, 16, 16]
+        act(),  # [B, c2, 16, 16] -> [B, c2, 16, 16]
+        nn.Flatten(),  # [B, c2, 16, 16] -> [B, c2 * 256]
+        nn.Linear(c2 * 16 * 16, latent_dim),  # [B, c2 * 256] -> [B, latent_dim]
     )
 
 
@@ -63,21 +68,23 @@ def build_resnet18_encoder(latent_dim):
     return encoder
 
 
-def build_decoder(latent_dim, decoder="light"):
+def build_decoder(latent_dim, decoder="light", channels=(32, 64), activation=None):
     """The decoder g_phi: h [B, latent_dim] -> [B, 3, 64, 64].
 
-    "light": the mirror of the small encoder, as in the course AutoEncoder. No activation
-    on the last layer: the target is normalized. "resnet18": build_resnet18_decoder.
+    "light": the mirror of the small encoder (same channels and activation), as in the course
+    AutoEncoder. No activation on the last layer: the target is normalized. "resnet18": build_resnet18_decoder.
     """
     if decoder == "resnet18":
         return build_resnet18_decoder(latent_dim)
+    act = ACTIVATIONS[activation or "gelu"]
+    c1, c2 = channels
     return nn.Sequential(
-        nn.Linear(latent_dim, 64 * 16 * 16),  # [B, latent_dim] -> [B, 16384]
-        nn.GELU(),  # [B, 16384] -> [B, 16384]
-        nn.Unflatten(1, (64, 16, 16)),  # [B, 16384] -> [B, 64, 16, 16]
-        nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, 64, 16, 16] -> [B, 32, 32, 32]
-        nn.GELU(),  # [B, 32, 32, 32] -> [B, 32, 32, 32]
-        nn.ConvTranspose2d(32, 3, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, 32, 32, 32] -> [B, 3, 64, 64]
+        nn.Linear(latent_dim, c2 * 16 * 16),  # [B, latent_dim] -> [B, c2 * 256]
+        act(),  # [B, c2 * 256] -> [B, c2 * 256]
+        nn.Unflatten(1, (c2, 16, 16)),  # [B, c2 * 256] -> [B, c2, 16, 16]
+        nn.ConvTranspose2d(c2, c1, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, c2, 16, 16] -> [B, c1, 32, 32]
+        act(),  # [B, c1, 32, 32] -> [B, c1, 32, 32]
+        nn.ConvTranspose2d(c1, 3, kernel_size=3, stride=2, padding=1, output_padding=1),  # [B, c1, 32, 32] -> [B, 3, 64, 64]
     )
 
 
@@ -125,13 +132,19 @@ class DenoisingAutoEncoder(pl.LightningModule):
         "gaussian":    x + noise_level * N(0, 1)
         "mask":        a noise_level fraction of the pixels is set to 0 (the mean color)
         "salt_pepper": a noise_level fraction of the pixels is set to black or white
+        "patch_mask":  a noise_level fraction of the patch_size x patch_size patches is set to 0 (MAE)
+        "block":       one random square, noise_level of the image, is set to 0 (context encoder)
     noise_level=0 is the plain autoencoder (the AE baseline).
     In val and test the noise of batch i comes from seed i, so every epoch is scored
     on the same corrupted images.
+    channels, activation: of the encoder (build_encoder); the light decoder mirrors them.
+    dropout: share of h zeroed before the decoder, in training only. optimizer: OPTIMIZERS;
+    scheduler "cosine": the lr decays to 0 over the run (CosineAnnealingLR).
     """
 
     def __init__(self, learning_rate, latent_dim, noise_type, noise_level, weight_decay=0.0,
-                 backbone="small", decoder="light"):
+                 backbone="small", decoder="light", activation=None, channels=(32, 64), dropout=0.0,
+                 optimizer="adamw", scheduler="none", patch_size=8):
         super().__init__()
         self.save_hyperparameters()  # the arguments -> self.hparams
         # Black (pixel 0) and white (pixel 1) after normalization, for salt_pepper
@@ -140,13 +153,14 @@ class DenoisingAutoEncoder(pl.LightningModule):
         self.register_buffer("black", (0 - mean) / std)  # [1, 3, 1, 1]
         self.register_buffer("white", (1 - mean) / std)
 
-        self.encoder = build_encoder(latent_dim, backbone)
-        self.decoder = build_decoder(latent_dim, decoder)
+        self.encoder = build_encoder(latent_dim, backbone, activation, channels)
+        self.dropout = nn.Dropout(dropout)  # no weights: the encoder file stays the same
+        self.decoder = build_decoder(latent_dim, decoder, channels, activation)
         self.loss_fn = nn.MSELoss()
 
     def forward(self, x):
         h = self.encoder(x)     # [B, 3, 64, 64] -> [B, latent_dim]
-        return self.decoder(h)  # [B, latent_dim] -> [B, 3, 64, 64]
+        return self.decoder(self.dropout(h))  # [B, latent_dim] -> [B, 3, 64, 64]
 
     def add_noise(self, x, generator=None):
         """Corrupt the normalized images x [B, 3, 64, 64].
@@ -155,6 +169,18 @@ class DenoisingAutoEncoder(pl.LightningModule):
         if noise_type == "gaussian":
             noise = torch.randn(x.shape, generator=generator, device=x.device, dtype=x.dtype)
             return x + noise_level * noise
+        if noise_type == "patch_mask":
+            p = self.hparams.patch_size
+            r = torch.rand((x.size(0), 1, x.size(2) // p, x.size(3) // p), generator=generator, device=x.device)  # [B, 1, 64/p, 64/p]
+            keep = (r >= noise_level).repeat_interleave(p, 2).repeat_interleave(p, 3)  # one number per patch -> [B, 1, 64, 64]
+            return x * keep  # the picked patches -> 0, the mean color
+        if noise_type == "block":
+            side = round(x.size(2) * noise_level ** 0.5)  # the square covers noise_level of the image
+            top, left = torch.randint(0, x.size(2) - side + 1, (2, x.size(0), 1, 1, 1), generator=generator, device=x.device)
+            rows = torch.arange(x.size(2), device=x.device).view(1, 1, -1, 1)
+            cols = torch.arange(x.size(3), device=x.device).view(1, 1, 1, -1)
+            hidden = (rows >= top) & (rows < top + side) & (cols >= left) & (cols < left + side)  # [B, 1, 64, 64]
+            return x * ~hidden  # the square -> 0, the mean color
         # mask and salt_pepper: one random number per pixel, shared by the 3 channels
         r = torch.rand((x.size(0), 1, x.size(2), x.size(3)), generator=generator, device=x.device, dtype=x.dtype)  # [B, 1, 64, 64]
         if noise_type == "mask":
@@ -210,7 +236,12 @@ class DenoisingAutoEncoder(pl.LightningModule):
         self.logger.experiment.add_image(tag, grid, self.global_step)
 
     def configure_optimizers(self):
-        return optim.AdamW(self.parameters(), lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay)
+        optimizer = OPTIMIZERS[self.hparams.optimizer](self.parameters(), lr=self.hparams.learning_rate,
+                                                       weight_decay=self.hparams.weight_decay)
+        if self.hparams.scheduler == "cosine":
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.trainer.max_epochs)  # one step per epoch
+            return {"optimizer": optimizer, "lr_scheduler": scheduler}
+        return optimizer
 
 
 class EncoderClassifier(pl.LightningModule):
@@ -226,11 +257,11 @@ class EncoderClassifier(pl.LightningModule):
 
     def __init__(self, learning_rate, num_classes, latent_dim, encoder_path=None, freeze_encoder=False,
                  backbone="small", label_smoothing=0.0, finetune_from=None, dropout=0.0, weight_decay=0.0,
-                 head_lr_mult=1.0, optimizer="adamw", activation=None):
+                 head_lr_mult=1.0, optimizer="adamw", activation=None, channels=(32, 64)):
         super().__init__()
         self.save_hyperparameters()  # the arguments -> self.hparams
 
-        self.encoder = build_encoder(latent_dim, backbone, activation)
+        self.encoder = build_encoder(latent_dim, backbone, activation, channels)
         if encoder_path is not None:
             # Weights from pretraining
             state_dict = torch.load(encoder_path, map_location="cpu", weights_only=True)
@@ -343,7 +374,7 @@ class SupervisedEncoder(EncoderClassifier):
     **ignored takes the hyperparameters load_from_checkpoint passes back."""
 
     def __init__(self, learning_rate, num_classes, latent_dim, backbone="small", label_smoothing=0.0, dropout=0.0,
-                 weight_decay=0.0, optimizer="adamw", activation=None, **ignored):
+                 weight_decay=0.0, optimizer="adamw", activation=None, channels=(32, 64), **ignored):
         super().__init__(learning_rate, num_classes, latent_dim, encoder_path=None, freeze_encoder=False,
                          backbone=backbone, label_smoothing=label_smoothing, dropout=dropout, weight_decay=weight_decay,
-                         optimizer=optimizer, activation=activation)
+                         optimizer=optimizer, activation=activation, channels=channels)

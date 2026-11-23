@@ -6,12 +6,19 @@ BATCH_SIZE = 256  # linear_probe, finetune and the supervised encoder
 DAE_BATCH_SIZE = 512  # pretrain (the DAE)
 WEIGHT_DECAY = 0.01  # AdamW weight decay of the DAE
 NUM_EPOCHS = 12  # the DAE only, no early stopping: its checkpoint is chosen by val k-NN
-SWEEP_NUM_EPOCHS = 8  # proxy setting of a search trial (--search)
+SWEEP_NUM_EPOCHS = 10  # proxy setting of a search trial (--search)
+DATA_FRACTION = 1.0  # --data_fraction: the share of the training images the DAE trains on (class-balanced)
 LATENT_DIM = 256  # length of h
-NOISE_TYPE = "salt_pepper"  # DAE corruption: "gaussian", "mask" or "salt_pepper"
-NOISE_LEVEL = 0.5  # gaussian: noise std; mask / salt_pepper: fraction of pixels. 0 = plain AE
+NOISE_TYPE = "salt_pepper"  # DAE corruption: model.NOISE_TYPES
+NOISE_LEVEL = 0.5  # gaussian: noise std; the others: fraction of pixels, patches or image. 0 = plain AE
+PATCH_SIZE = 8  # patch_mask: the side of a patch
+DAE_DROPOUT = 0.0  # share of h zeroed before the decoder, in training
+DAE_AUGMENT = "flip"  # the DAE's training images (augmentations.AUGMENTS)
+DAE_OPTIMIZER = "adamw"  # model.OPTIMIZERS
+DAE_SCHEDULER = "none"  # "none" or "cosine"
 # Architecture (see model.py)
 BACKBONE = "small"  # the encoder: "small" (the course encoder) or "resnet18"
+CHANNELS = (32, 64)  # the output channels of the small encoder's two conv layers (--channels)
 DECODER = "light"  # the DAE decoder: "light" or "resnet18" (inverted ResNet-18)
 
 # The grid of the A2 search (train.py --search, one trial per call).
@@ -25,7 +32,8 @@ SWEEP = {
 # k-NN evaluation (the assignment): k=20, cosine on L2-normalized h, similarity-weighted vote
 KNN_K = 20
 KNN_BANK_SIZE = None  # memory bank size. None = all 90,000 training images
-SEARCH_KNN_BANK_SIZE = 20000  # --search only: 100 images per class, faster
+SEARCH_KNN_BANK_SIZE = 10000  # --search only: 50 images per class, faster
+SEARCH_KNN_EVERY = 2  # --search only: the k-NN every 2 epochs
 
 # Dataset
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset")  # next to this file
@@ -68,7 +76,7 @@ CLASSIFIER_WD = 0.0  # --wd: AdamW weight decay of the classifiers (0 = Adam)
 DROPOUT = 0.0  # --dropout: share of h zeroed before the head, in training
 AUGMENT = "flip"  # --augment: the training images of a classifier (augmentations.AUGMENTS)
 OPTIMIZER = "adamw"  # --optimizer of the classifiers (model.OPTIMIZERS)
-ACTIVATION = None  # --activation of a supervised encoder (model.ACTIVATIONS); None: the backbone's own
+ACTIVATION = None  # --activation of the encoder (model.ACTIVATIONS); None: the backbone's own
 TUNE = False  # --tune: a tuning run: val only, no test
 # Partial fine-tuning (ResNet-18, --finetune_from): the first layer that trains.
 # "layer3" trains layer3, layer4, fc and the head. None = the whole encoder trains.

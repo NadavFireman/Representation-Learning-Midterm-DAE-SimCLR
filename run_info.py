@@ -14,10 +14,31 @@ TZ = ZoneInfo("Asia/Jerusalem")
 STAGE = {"pretrain": "pretrain", "pretrain_supervise_encoder": "supervised", "knn": "knn",
          "linear_probe": "linear_probe", "finetune": "finetune", "analysis": "analysis"}
 PERCENT = {0.01: "1pct", 0.1: "10pct", 1.0: "100pct"}
+# The DAE settings as config.py has them, before the flags change them: a name lists the ones that differ
+DAE_ARCHITECTURE = ("CHANNELS", "ACTIVATION", "PATCH_SIZE")
+DAE_TRAINING = ("LEARNING_RATE", "DAE_BATCH_SIZE", "WEIGHT_DECAY", "DAE_OPTIMIZER", "DAE_DROPOUT", "DAE_AUGMENT",
+                "DAE_SCHEDULER", "DATA_FRACTION", "NUM_EPOCHS")
+DAE_DEFAULTS = {name: getattr(config, name) for name in ("LATENT_DIM", *DAE_ARCHITECTURE, *DAE_TRAINING)}
+DAE_TAGS = {"LATENT_DIM": "h", "CHANNELS": "c", "ACTIVATION": "act-", "PATCH_SIZE": "p", "LEARNING_RATE": "lr",
+            "DAE_BATCH_SIZE": "bs", "WEIGHT_DECAY": "wd", "DAE_OPTIMIZER": "opt-", "DAE_DROPOUT": "do",
+            "DAE_AUGMENT": "aug-", "DAE_SCHEDULER": "sched-", "DATA_FRACTION": "data", "NUM_EPOCHS": "e"}
 
 
 def now():
     return datetime.now(TZ)
+
+
+def dae_tags(names):
+    """The DAE settings among names that differ from config.py, as a name part, e.g. "_c16-32_lr0.002"."""
+    text = ""
+    for name in names:
+        value = getattr(config, name)
+        if value == DAE_DEFAULTS[name] or (name == "PATCH_SIZE" and config.NOISE_TYPE != "patch_mask"):
+            continue  # the patch size matters only for patch_mask
+        if isinstance(value, tuple):
+            value = "-".join(map(str, value))
+        text += f"_{DAE_TAGS[name]}{value:g}" if isinstance(value, float) else f"_{DAE_TAGS[name]}{value}"
+    return text
 
 
 def what(mode):
@@ -42,10 +63,13 @@ def what(mode):
 def folder_name(mode):
     """The existing folder of this run (it continues), or a new name with the date and time now."""
     model = "ResNet18" if config.BACKBONE == "resnet18" else "CNN3"
-    stage = "search" if config.SEARCH else STAGE[mode]
+    stage = STAGE[mode]
     if config.FINETUNE_FROM:
         stage += f"-from-{config.FINETUNE_FROM}"
     suffix = f"{model}_{config.RUN_TAG}_{stage}_{what(mode)}"
+    if mode == "pretrain":  # a search or tuning trial also lists its training settings
+        trial = config.SEARCH or config.TUNE
+        suffix += dae_tags(("LATENT_DIM", *DAE_ARCHITECTURE, *(DAE_TRAINING if trial else ())))
     if mode in ("linear_probe", "finetune", "pretrain_supervise_encoder"):  # the hyperparameters that differ from config
         for tag, value, default in (("lr", config.CLASSIFIER_LR, None), ("hm", config.HEAD_LR_MULT, 1.0),
                                     ("bs", config.BATCH_SIZE, 256), ("wd", config.CLASSIFIER_WD, 0.0),
@@ -54,6 +78,10 @@ def folder_name(mode):
                                     ("act-", config.ACTIVATION, None)):
             if value != default:
                 suffix += f"_{tag}{value:g}" if isinstance(value, float) else f"_{tag}{value}"
+    if mode in ("knn", "analysis"):
+        suffix += dae_tags(("CHANNELS", "ACTIVATION"))  # the encoder they load
+    elif mode != "pretrain":
+        suffix += dae_tags(("CHANNELS",))
     suffix += f"_seed{config.TRAIN_SEED}"  # every run, seed 42 too
     if os.path.isdir(config.OUTPUT_DIR):
         for name in os.listdir(config.OUTPUT_DIR):
@@ -66,9 +94,13 @@ def settings(mode, model):
     """The hyperparameters of the run, in one line (all of them are in hparams.yaml)."""
     parts = [f"encoder {'ResNet-18' if config.BACKBONE == 'resnet18' else 'CNN-3'}", f"h {config.LATENT_DIM}"]
     if mode == "pretrain":
-        parts += [f"decoder {config.DECODER}", f"noise {config.NOISE_TYPE} {config.NOISE_LEVEL}",
-                  f"AdamW lr {config.LEARNING_RATE}, weight decay {config.WEIGHT_DECAY}", f"batch {config.DAE_BATCH_SIZE}",
-                  f"{config.NUM_EPOCHS} epochs, checkpoint: best val k-NN"]
+        noise = f"{config.NOISE_TYPE} {config.NOISE_LEVEL}" + (f" (patch {config.PATCH_SIZE})" if config.NOISE_TYPE == "patch_mask" else "")
+        epochs = config.SWEEP_NUM_EPOCHS if config.SEARCH else config.NUM_EPOCHS
+        parts += [f"channels {config.CHANNELS[0]}-{config.CHANNELS[1]}", f"activation {config.ACTIVATION or 'the backbone own'}",
+                  f"decoder {config.DECODER}", f"noise {noise}", f"dropout on h {config.DAE_DROPOUT}",
+                  f"augment {config.DAE_AUGMENT}", f"{config.DAE_OPTIMIZER} lr {config.LEARNING_RATE}, weight decay {config.WEIGHT_DECAY}",
+                  f"scheduler {config.DAE_SCHEDULER}", f"batch {config.DAE_BATCH_SIZE}",
+                  f"{config.DATA_FRACTION:g} of the training images", f"{epochs} epochs, checkpoint: best val k-NN"]
     elif mode in ("knn", "analysis"):
         parts += [f"k-NN k={config.KNN_K}, no training"]
     else:

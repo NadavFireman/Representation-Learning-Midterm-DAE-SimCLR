@@ -26,9 +26,8 @@ def run(mode):
     logger = TensorBoardLogger(config.OUTPUT_DIR, name="", version=run_name, default_hp_metric=False)
 
     # A finished run has results.json: running it again prints its results and stops.
-    # Search trials always run again.
     results_file = os.path.join(logger.log_dir, "results.json")
-    if os.path.exists(results_file) and not config.SEARCH:
+    if os.path.exists(results_file):
         with open(results_file) as f:
             results = json.load(f)
         print(f"{run_name} already finished; its results are in {results_file}")
@@ -47,8 +46,8 @@ def run(mode):
 
     model = build_model(mode)
 
-    # The DAE uses every training image and no labels; the other modes use --label_fraction.
-    label_fraction = 1.0 if mode == "pretrain" else config.LABEL_FRACTION
+    # The DAE uses no labels and --data_fraction of the training images (all by default); the other modes use --label_fraction.
+    label_fraction = config.DATA_FRACTION if mode == "pretrain" else config.LABEL_FRACTION
     if config.SEARCH:
         num_epochs = config.SWEEP_NUM_EPOCHS  # proxy setting for tuning
     elif mode == "pretrain":
@@ -57,6 +56,8 @@ def run(mode):
         num_epochs = config.TARGET_NUM_EPOCHS  # the classifiers: a cap in rounds, EarlyStopping ends them sooner
     # Epochs per round: a round is as many images as 100% of the labels (config.TARGET_NUM_EPOCHS)
     every = 1 if mode == "pretrain" or config.SEARCH else max(1, round(1 / label_fraction))
+    # A DAE search trial scores its k-NN every SEARCH_KNN_EVERY epochs only, to be faster
+    val_every = config.SEARCH_KNN_EVERY if mode == "pretrain" and config.SEARCH else every
 
     # This run's own config file: every value of config.py as this run used it (hparams.yaml).
     settings = {name: getattr(config, name) for name in dir(config) if name.isupper()}
@@ -73,7 +74,7 @@ def run(mode):
         seed=config.SEED,
         test_curve=config.TEST_CURVE and not config.SEARCH,  # a search trial never uses the test set
         eval_batch_size=config.EVAL_BATCH_SIZE,
-        augment="flip" if mode == "pretrain" else config.AUGMENT,  # the DAE keeps the augmentation of its search
+        augment=config.DAE_AUGMENT if mode == "pretrain" else config.AUGMENT,
     )
 
     if mode == "knn":
@@ -115,7 +116,7 @@ def run(mode):
         devices=config.DEVICES,
         min_epochs=1,
         max_epochs=num_epochs * every,
-        check_val_every_n_epoch=every,
+        check_val_every_n_epoch=val_every,
         precision=config.PRECISION,
         benchmark=True,  # cuDNN picks the fastest convolutions for the fixed 64x64 input
         limit_train_batches=config.LIMIT_BATCHES,
@@ -158,8 +159,7 @@ def run(mode):
                 rows = pd.concat([pd.read_csv(sweep_results), rows])
             # One row per trial: a trial that is run again replaces its row.
             rows.drop_duplicates(subset=[*config.SWEEP, "seed"], keep="last").to_csv(sweep_results, index=False)
-        run_info.write(logger, mode, model, {k: float(v) for k, v in val_results[0].items()}, start, trainer, timer)
-        return val_results[0]
+        return save_results(val_results[0])  # results.json: a finished trial is skipped when run again
 
     results = trainer.test(model, dm, ckpt_path="best")
     # The val numbers of the kept checkpoint too, next to the test numbers
