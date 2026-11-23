@@ -14,14 +14,14 @@ data is a LightningDataModule (`datamodule.py`), and every run is one call of
 
 Two notebooks, in this order, each in Colab with a GPU runtime (L4 or A100):
 
-- `colab_tuning.ipynb`: the hyperparameters of the classifiers, on val only, on 10% of the
-  labels. Three grids, one after the other: learning (learning rate, the head's learning
-  rate, batch size), regularization (dropout, augmentation, label smoothing), then the
-  optimizer (AdamW, Adam, NAdam, RAdam, SGD), its weight decay and, for the supervised
-  encoder, the activation (ReLU, LeakyReLU, GELU, SiLU, Mish). In each, one hyperparameter at a time, 5 values, the others fixed at what was
-  chosen so far; a value replaces the current one only if it is better than the seed noise.
-  For CNN-3 fine-tuning and supervised, and ResNet-18 fine-tuning, linear probe and
-  supervised. The choices go to `midterm_runs/tuning_choice.json`.
+- `colab_tuning.ipynb`: the hyperparameters of CNN-3 fine-tuning and the ResNet-18 linear
+  probe, on val only, on 10% of the labels; the other classifiers keep `config.py`. Three
+  grids, one after the other: learning (learning rate, the head's learning rate, batch size),
+  regularization (dropout, augmentation, label smoothing), then the optimizer (AdamW, Adam,
+  NAdam, RAdam, SGD) and its weight decay. In each, one hyperparameter at a time, 5 values,
+  the others fixed at what was chosen so far; the best by val accuracy is kept. Every run
+  stops after 3 rounds with no better val accuracy (`--patience 3`). The choices go to
+  `midterm_runs/tuning_choice.json`.
 - `colab_final.ipynb`: every final run, with those choices. Its cells:
 
 1. Clone the repository (or pull it, if the runtime already has it).
@@ -77,6 +77,7 @@ Other flags:
 | `--optimizer` | The classifiers' optimizer: `adamw` (default), `adam`, `nadam`, `radam` or `sgd` (Nesterov momentum 0.9). |
 | `--activation` | The supervised encoder's activation: `relu`, `leaky_relu`, `gelu`, `silu`, `mish` (default: the backbone's own, GELU for CNN-3, ReLU for ResNet-18). A supervised encoder trained with one is saved with its name in the file, and is loaded with the same flag. The DAE encoders keep the activation they were pretrained with. |
 | `--max_rounds` | Cap of a classifier, in rounds (default 100). A round is as many training images as 100% of the labels, so 1% validates every 100 epochs and 10% every 10: every label fraction gets the same budget and the same patience. |
+| `--patience` | Rounds with no better val accuracy before a classifier stops (default 5; the tuning uses 3). |
 | `--tune` | A tuning run: chosen by val accuracy, so no test and no test curve; the folder has `tune` instead of `final`. |
 | `--num_epochs` | Epochs of the DAE (`pretrain`), default `config.NUM_EPOCHS` (12). The classifiers have their own cap, `TARGET_NUM_EPOCHS`. |
 | `--seed` | The training seed. The splits and the label subsets always use `config.SEED`. |

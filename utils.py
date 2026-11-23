@@ -124,6 +124,7 @@ def parse_args():
     parser.add_argument("--activation", choices=tuple(ACTIVATIONS), default=config.ACTIVATION,
                         help="pretrain_supervise_encoder, and the modes that load its encoder (--encoder supervised).")
     parser.add_argument("--max_rounds", type=int, default=config.TARGET_NUM_EPOCHS, help="Cap in rounds (config).")
+    parser.add_argument("--patience", type=int, default=config.PATIENCE, help="Rounds with no better val accuracy before stopping.")
     parser.add_argument("--tune", action="store_true", help="A tuning run: chosen by val, so no test and no test curve.")
     parser.add_argument(
         "--seed",
@@ -170,6 +171,7 @@ def parse_args():
     config.OPTIMIZER = args.optimizer
     config.ACTIVATION = args.activation
     config.TARGET_NUM_EPOCHS = args.max_rounds
+    config.PATIENCE = args.patience
     config.TUNE = args.tune
     if args.tune:
         config.RUN_TAG = "tune"
