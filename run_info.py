@@ -54,7 +54,7 @@ def folder_name(mode):
                                     ("act-", config.ACTIVATION, None)):
             if value != default:
                 suffix += f"_{tag}{value:g}" if isinstance(value, float) else f"_{tag}{value}"
-    suffix += f"_s{config.TRAIN_SEED}" if config.TRAIN_SEED != 42 else ""
+    suffix += f"_s{config.TRAIN_SEED}"  # every run, seed 42 too
     if os.path.isdir(config.OUTPUT_DIR):
         for name in os.listdir(config.OUTPUT_DIR):
             if re.fullmatch(r"date\d{8}_time\d{6}_" + re.escape(suffix), name):
