@@ -20,8 +20,8 @@ def run(mode):
     """Train and evaluate one experiment. mode: config.MODEL_NAME, or --mode."""
     pl.seed_everything(config.TRAIN_SEED)  # same initialization and data order -> fair comparison
 
-    # One folder per run, date<DDMMYYYY>_time<HHMMSS>_<model>_<what> (run_info.py); a run
-    # cut off by a Colab disconnect finds the same folder and continues from its last.ckpt.
+    # One folder per run (run_info.py); a run cut off by a Colab disconnect
+    # finds the same folder and continues from its last.ckpt.
     run_name = run_info.folder_name(mode)
     logger = TensorBoardLogger(config.OUTPUT_DIR, name="", version=run_name, default_hp_metric=False)
 

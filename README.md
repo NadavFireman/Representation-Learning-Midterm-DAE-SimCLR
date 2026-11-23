@@ -158,8 +158,8 @@ Chosen by validation k-NN accuracy, not by reconstruction error, in two searches
 ## Logs
 
 Every run writes to its own folder in `<output_dir>`:
-`date<DDMMYYYY>_time<HHMMSS>_<model>_final_<stage>_<what>_s<seed>`, for example
-`date23112026_time101500_ResNet18_final_finetune_DAE_on_TinyImageNet_10pct_s42`. The date and
+`date<DDMMYYYY>_time<HHMMSS>_<model>_final_<stage>_<what>_seed<seed>`, for example
+`date23112026_time101500_ResNet18_final_finetune_DAE_on_TinyImageNet_10pct_seed42`. The date and
 time are those of its first start; after a disconnect the run finds the same folder and
 continues. The folder holds the TensorBoard logs, every setting (`hparams.yaml`), the
 results (`results.json`) and `run_info.txt`: what the run is, its hyperparameters, epochs,
