@@ -70,6 +70,7 @@ Other flags:
 | `--label_fraction` | `1.0`, `0.1` or `0.01`: a class-balanced share of the labels, the same images for every model. |
 | `--noise_type`, `--noise_level`, `--latent_dim` | The DAE hyperparameters. `--noise_type`: `gaussian`, `mask`, `salt_pepper`, `patch_mask` (a share of the patches, as in MAE) or `block` (one square, as in the context encoder). |
 | `--patch_size` | `patch_mask`: the side of a patch (default 8). |
+| `--noise_type2`, `--noise_level2` | A second noise on top of `--noise_type` (default `none`). |
 | `--channels C1 C2` | The output channels of CNN-3's two conv layers (default 32 64). The light decoder mirrors them, and the modes that load an encoder need the same. |
 | `--scheduler` | The DAE's lr schedule: `none` (default) or `cosine`. |
 | `--data_fraction` | `pretrain`: the share of the training images the DAE trains on, class-balanced (default 1.0; the DAE search uses 0.1). |
@@ -77,7 +78,7 @@ Other flags:
 | `--decoder` | The DAE decoder: `light` (default) or `resnet18` (inverted ResNet-18). The modes that load a DAE encoder need it too: it is part of the encoder's file name. |
 | `--finetune_from` | `finetune` with `--backbone resnet18` only: partial fine-tuning. The encoder layers before this one (`layer1` to `layer4`, or `fc`) stay frozen, with their BatchNorm statistics; it and the layers after it train with the head. The run folder gets `finetune-from-<layer>`. |
 | `--lr`, `--head_lr_mult`, `--batch_size`, `--wd` | The optimization: learning rate (default `FINETUNE_LEARNING_RATE` for `finetune`, `LEARNING_RATE` otherwise), the head's learning rate as a multiple of it, batch size, weight decay. With `--mode pretrain` `--lr`, `--batch_size` and `--wd` set the DAE's (defaults `LEARNING_RATE`, `DAE_BATCH_SIZE`, `WEIGHT_DECAY`). |
-| `--dropout`, `--augment`, `--label_smoothing` | The regularization: share of h zeroed in training (`nn.Dropout`; before the head, or before the decoder with `--mode pretrain`), the training augmentation (`none`, `flip`, `crop`, `crop_rotate`, `crop_jitter`; `augmentations.AUGMENTS`; the DAE's default is `flip`), label smoothing. |
+| `--dropout`, `--augment`, `--label_smoothing` | The regularization: share of h zeroed in training (`nn.Dropout`; before the head, or before the decoder with `--mode pretrain`), the training augmentation (`none`, `flip`, `crop`, `crop_rotate`, `crop_jitter`, `flip_rotate`, `flip_jitter`, `flip_rotate_jitter`; `augmentations.AUGMENTS`; the DAE's default is `flip`), label smoothing. |
 | `--optimizer` | The optimizer: `adamw` (default), `adam`, `nadam`, `radam` or `sgd` (Nesterov momentum 0.9). With `--mode pretrain`, the DAE's. |
 | `--activation` | The encoder's activation: `relu`, `leaky_relu`, `gelu`, `silu`, `mish` (default: the backbone's own, GELU for CNN-3, ReLU for ResNet-18). An encoder trained with another is saved with its name in the file, and is loaded with the same flag. |
 | `--max_rounds` | Cap of a classifier, in rounds (default 100). A round is as many training images as 100% of the labels, so 1% validates every 100 epochs and 10% every 10: every label fraction gets the same budget and the same patience. |
@@ -124,6 +125,8 @@ Chosen by validation k-NN accuracy, not by reconstruction error, in two searches
   dropout, augmentation and batch size; the optimizer and the activation; the learning rate, weight decay
   and scheduler), every combination in each, the winner carried to the next grid, by val k-NN. Each trial
   trains on 10% of the training images for 10 epochs; the 5 best then train on all of them for 20 epochs.
+  `colab_dae_grids_2.ipynb` continues it with grid 6 (a second noise on top of the winner, combined
+  augmentations) and grid 7 (smaller conv 2 and patch size).
 - `history/colab_experiments.ipynb`: search 1, staged grids over the corruption, its level,
   `latent_dim`, learning rate, batch size and more (run on an A100).
 - `history/colab_search2.ipynb`: search 2, five grids of 2 to 4 hyperparameters each, repeated
@@ -144,6 +147,7 @@ Chosen by validation k-NN accuracy, not by reconstruction error, in two searches
 | `callbacks.py` | Per-epoch k-NN, per-epoch metrics, progress bar. |
 | `analysis.py` | Per-class accuracy, t-SNE, retrieval and robustness. |
 | `colab_dae_grids.ipynb` | Launcher: the DAE hyperparameters (search 3), five grids on val k-NN. |
+| `colab_dae_grids_2.ipynb` | Launcher: search 3 continued, grid 6 (a second noise, combined augmentations) and grid 7 (smaller conv 2 and patch). |
 | `colab_tuning.ipynb` | Launcher: the classifier hyperparameters, three grids on val. |
 | `colab_final.ipynb` | Launcher: every final run, with the tuning's choices. |
 

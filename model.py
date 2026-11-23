@@ -135,6 +135,7 @@ class DenoisingAutoEncoder(pl.LightningModule):
         "patch_mask":  a noise_level fraction of the patch_size x patch_size patches is set to 0 (MAE)
         "block":       one random square, noise_level of the image, is set to 0 (context encoder)
     noise_level=0 is the plain autoencoder (the AE baseline).
+    noise_type2, noise_level2: a second noise added on top of the first ("none": no second noise).
     In val and test the noise of batch i comes from seed i, so every epoch is scored
     on the same corrupted images.
     channels, activation: of the encoder (build_encoder); the light decoder mirrors them.
@@ -144,7 +145,8 @@ class DenoisingAutoEncoder(pl.LightningModule):
 
     def __init__(self, learning_rate, latent_dim, noise_type, noise_level, weight_decay=0.0,
                  backbone="small", decoder="light", activation=None, channels=(32, 64), dropout=0.0,
-                 optimizer="adamw", scheduler="none", patch_size=8):
+                 optimizer="adamw", scheduler="none", patch_size=8,
+                 noise_type2="none", noise_level2=0.0):
         super().__init__()
         self.save_hyperparameters()  # the arguments -> self.hparams
         # Black (pixel 0) and white (pixel 1) after normalization, for salt_pepper
@@ -163,9 +165,15 @@ class DenoisingAutoEncoder(pl.LightningModule):
         return self.decoder(self.dropout(h))  # [B, latent_dim] -> [B, 3, 64, 64]
 
     def add_noise(self, x, generator=None):
-        """Corrupt the normalized images x [B, 3, 64, 64].
+        """Corrupt the normalized images x [B, 3, 64, 64]: the noise, then the second noise if any.
         generator=None: new noise every call (training). Seeded: the same noise (val, test)."""
-        noise_type, noise_level = self.hparams.noise_type, self.hparams.noise_level
+        x = self._corrupt(x, self.hparams.noise_type, self.hparams.noise_level, generator)
+        if self.hparams.noise_type2 != "none":
+            x = self._corrupt(x, self.hparams.noise_type2, self.hparams.noise_level2, generator)  # stacked
+        return x
+
+    def _corrupt(self, x, noise_type, noise_level, generator):
+        """One noise of NOISE_TYPES at noise_level."""
         if noise_type == "gaussian":
             noise = torch.randn(x.shape, generator=generator, device=x.device, dtype=x.dtype)
             return x + noise_level * noise

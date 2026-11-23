@@ -50,6 +50,8 @@ def encoder_path(encoder, pretrain_dataset, writing=False):
         name += run_info.dae_tags(("CHANNELS",))  # the same channels as the DAE it is compared with
     else:
         name = f"dae_{pretrain_dataset}_{config.NOISE_TYPE}_{config.NOISE_LEVEL}_{config.LATENT_DIM}{architecture_tag(encoder)}_s{config.TRAIN_SEED}"
+        if config.NOISE_TYPE2 != "none":
+            name += f"_{config.NOISE_TYPE2}_{config.NOISE_LEVEL2}"  # the second noise
         trial = writing and (config.SEARCH or config.TUNE)
         name += run_info.dae_tags(run_info.DAE_ARCHITECTURE + (run_info.DAE_TRAINING if trial else ()))
     if config.SEARCH:
@@ -77,6 +79,9 @@ def parse_args():
     parser.add_argument("--noise_type", choices=NOISE_TYPES, default=config.NOISE_TYPE)
     parser.add_argument("--noise_level", type=float, default=config.NOISE_LEVEL)
     parser.add_argument("--patch_size", type=int, default=config.PATCH_SIZE, help="patch_mask: the side of a patch.")
+    parser.add_argument("--noise_type2", choices=("none", *NOISE_TYPES), default=config.NOISE_TYPE2,
+                        help="A second noise on top of --noise_type.")
+    parser.add_argument("--noise_level2", type=float, default=config.NOISE_LEVEL2)
     parser.add_argument("--latent_dim", type=int, default=config.LATENT_DIM)
     parser.add_argument("--channels", type=int, nargs=2, default=config.CHANNELS, metavar=("C1", "C2"),
                         help="The output channels of the small encoder's two conv layers.")
@@ -166,6 +171,8 @@ def parse_args():
     config.NOISE_LEVEL = args.noise_level
     config.LATENT_DIM = args.latent_dim
     config.PATCH_SIZE = args.patch_size
+    config.NOISE_TYPE2 = args.noise_type2
+    config.NOISE_LEVEL2 = args.noise_level2
     config.CHANNELS = tuple(args.channels)
     config.DAE_SCHEDULER = args.scheduler
     config.DATA_FRACTION = args.data_fraction
@@ -223,6 +230,8 @@ def build_model(mode):
             optimizer=config.DAE_OPTIMIZER,
             scheduler=config.DAE_SCHEDULER,
             patch_size=config.PATCH_SIZE,
+            noise_type2=config.NOISE_TYPE2,
+            noise_level2=config.NOISE_LEVEL2,
         )
 
     if mode == "pretrain_supervise_encoder":

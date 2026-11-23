@@ -13,6 +13,10 @@ AUGMENTS = {
     "crop_rotate": [v2.RandomHorizontalFlip(p=0.5), v2.RandomCrop(64, padding=4), v2.RandomRotation(10)],
     "crop_jitter": [v2.RandomHorizontalFlip(p=0.5), v2.RandomCrop(64, padding=4),
                     v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2)],
+    "flip_rotate": [v2.RandomHorizontalFlip(p=0.5), v2.RandomRotation(10)],
+    "flip_jitter": [v2.RandomHorizontalFlip(p=0.5), v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2)],
+    "flip_rotate_jitter": [v2.RandomHorizontalFlip(p=0.5), v2.RandomRotation(10),
+                           v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2)],
 }
 
 

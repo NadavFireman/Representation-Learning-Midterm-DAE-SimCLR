@@ -48,6 +48,8 @@ def what(mode):
         encoder = "AE" if config.NOISE_LEVEL == 0 else "DAE"
         if config.NOISE_LEVEL != 0 and (config.NOISE_TYPE, config.NOISE_LEVEL) != ("salt_pepper", 0.5):
             encoder += f"-{config.NOISE_TYPE}{config.NOISE_LEVEL}"
+        if config.NOISE_LEVEL != 0 and config.NOISE_TYPE2 != "none":
+            encoder += f"+{config.NOISE_TYPE2}{config.NOISE_LEVEL2}"  # the second noise
         if config.BACKBONE == "resnet18" and config.DECODER == "light":
             encoder += "-lightdec"
     else:
@@ -95,6 +97,8 @@ def settings(mode, model):
     parts = [f"encoder {'ResNet-18' if config.BACKBONE == 'resnet18' else 'CNN-3'}", f"h {config.LATENT_DIM}"]
     if mode == "pretrain":
         noise = f"{config.NOISE_TYPE} {config.NOISE_LEVEL}" + (f" (patch {config.PATCH_SIZE})" if config.NOISE_TYPE == "patch_mask" else "")
+        if config.NOISE_TYPE2 != "none":
+            noise += f" + {config.NOISE_TYPE2} {config.NOISE_LEVEL2}"
         epochs = config.SWEEP_NUM_EPOCHS if config.SEARCH else config.NUM_EPOCHS
         parts += [f"channels {config.CHANNELS[0]}-{config.CHANNELS[1]}", f"activation {config.ACTIVATION or 'the backbone own'}",
                   f"decoder {config.DECODER}", f"noise {noise}", f"dropout on h {config.DAE_DROPOUT}",
