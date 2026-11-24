@@ -71,6 +71,8 @@ Other flags:
 | `--noise_type`, `--noise_level`, `--latent_dim` | The DAE hyperparameters. `--noise_type`: `gaussian`, `mask`, `salt_pepper`, `patch_mask` (a share of the patches, as in MAE) or `block` (one square, as in the context encoder). |
 | `--patch_size` | `patch_mask`: the side of a patch (default 8). |
 | `--noise_type2`, `--noise_level2` | A second noise on top of `--noise_type` (default `none`). |
+| `--noise_level_end` | Rising noise: from `--noise_level` in the first epoch to this in the last, in a straight line (default: none, a fixed level). |
+| `--loss` | The DAE's reconstruction loss: `mse` (default) or `l1`. |
 | `--channels C1 C2` | The output channels of CNN-3's two conv layers (default 32 64). The light decoder mirrors them, and the modes that load an encoder need the same. |
 | `--scheduler` | The DAE's lr schedule: `none` (default) or `cosine`. |
 | `--data_fraction` | `pretrain`: the share of the training images the DAE trains on, class-balanced (default 1.0; the DAE search uses 0.1). |

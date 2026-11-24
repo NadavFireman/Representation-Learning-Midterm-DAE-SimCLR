@@ -82,6 +82,9 @@ def parse_args():
     parser.add_argument("--noise_type2", choices=("none", *NOISE_TYPES), default=config.NOISE_TYPE2,
                         help="A second noise on top of --noise_type.")
     parser.add_argument("--noise_level2", type=float, default=config.NOISE_LEVEL2)
+    parser.add_argument("--noise_level_end", type=float, default=config.NOISE_LEVEL_END,
+                        help="Rising noise: from --noise_level in the first epoch to this in the last.")
+    parser.add_argument("--loss", choices=("mse", "l1"), default=config.DAE_LOSS, help="The DAE's reconstruction loss.")
     parser.add_argument("--latent_dim", type=int, default=config.LATENT_DIM)
     parser.add_argument("--channels", type=int, nargs=2, default=config.CHANNELS, metavar=("C1", "C2"),
                         help="The output channels of the small encoder's two conv layers.")
@@ -173,6 +176,8 @@ def parse_args():
     config.PATCH_SIZE = args.patch_size
     config.NOISE_TYPE2 = args.noise_type2
     config.NOISE_LEVEL2 = args.noise_level2
+    config.NOISE_LEVEL_END = args.noise_level_end
+    config.DAE_LOSS = args.loss
     config.CHANNELS = tuple(args.channels)
     config.DAE_SCHEDULER = args.scheduler
     config.DATA_FRACTION = args.data_fraction
@@ -232,6 +237,8 @@ def build_model(mode):
             patch_size=config.PATCH_SIZE,
             noise_type2=config.NOISE_TYPE2,
             noise_level2=config.NOISE_LEVEL2,
+            noise_level_end=config.NOISE_LEVEL_END,
+            loss=config.DAE_LOSS,
         )
 
     if mode == "pretrain_supervise_encoder":

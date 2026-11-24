@@ -17,11 +17,12 @@ PERCENT = {0.01: "1pct", 0.1: "10pct", 1.0: "100pct"}
 # The DAE settings as config.py has them, before the flags change them: a name lists the ones that differ
 DAE_ARCHITECTURE = ("CHANNELS", "ACTIVATION", "PATCH_SIZE")
 DAE_TRAINING = ("LEARNING_RATE", "DAE_BATCH_SIZE", "WEIGHT_DECAY", "DAE_OPTIMIZER", "DAE_DROPOUT", "DAE_AUGMENT",
-                "DAE_SCHEDULER", "DATA_FRACTION", "NUM_EPOCHS")
+                "DAE_SCHEDULER", "NOISE_LEVEL_END", "DAE_LOSS", "DATA_FRACTION", "NUM_EPOCHS")
 DAE_DEFAULTS = {name: getattr(config, name) for name in ("LATENT_DIM", *DAE_ARCHITECTURE, *DAE_TRAINING)}
 DAE_TAGS = {"LATENT_DIM": "h", "CHANNELS": "c", "ACTIVATION": "act-", "PATCH_SIZE": "p", "LEARNING_RATE": "lr",
             "DAE_BATCH_SIZE": "bs", "WEIGHT_DECAY": "wd", "DAE_OPTIMIZER": "opt-", "DAE_DROPOUT": "do",
-            "DAE_AUGMENT": "aug-", "DAE_SCHEDULER": "sched-", "DATA_FRACTION": "data", "NUM_EPOCHS": "e"}
+            "DAE_AUGMENT": "aug-", "DAE_SCHEDULER": "sched-", "NOISE_LEVEL_END": "to", "DAE_LOSS": "loss-",
+            "DATA_FRACTION": "data", "NUM_EPOCHS": "e"}
 
 
 def now():
@@ -99,9 +100,11 @@ def settings(mode, model):
         noise = f"{config.NOISE_TYPE} {config.NOISE_LEVEL}" + (f" (patch {config.PATCH_SIZE})" if config.NOISE_TYPE == "patch_mask" else "")
         if config.NOISE_TYPE2 != "none":
             noise += f" + {config.NOISE_TYPE2} {config.NOISE_LEVEL2}"
+        if config.NOISE_LEVEL_END is not None:
+            noise += f", rising to {config.NOISE_LEVEL_END} in the last epoch"
         epochs = config.SWEEP_NUM_EPOCHS if config.SEARCH else config.NUM_EPOCHS
         parts += [f"channels {config.CHANNELS[0]}-{config.CHANNELS[1]}", f"activation {config.ACTIVATION or 'the backbone own'}",
-                  f"decoder {config.DECODER}", f"noise {noise}", f"dropout on h {config.DAE_DROPOUT}",
+                  f"decoder {config.DECODER}", f"noise {noise}", f"loss {config.DAE_LOSS}", f"dropout on h {config.DAE_DROPOUT}",
                   f"augment {config.DAE_AUGMENT}", f"{config.DAE_OPTIMIZER} lr {config.LEARNING_RATE}, weight decay {config.WEIGHT_DECAY}",
                   f"scheduler {config.DAE_SCHEDULER}", f"batch {config.DAE_BATCH_SIZE}",
                   f"{config.DATA_FRACTION:g} of the training images", f"{epochs} epochs, checkpoint: best val k-NN"]

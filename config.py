@@ -14,6 +14,8 @@ NOISE_LEVEL = 0.5  # gaussian: noise std; the others: fraction of pixels, patche
 PATCH_SIZE = 8  # patch_mask: the side of a patch
 NOISE_TYPE2 = "none"  # a second noise on top of the first; "none" = only one
 NOISE_LEVEL2 = 0.0
+NOISE_LEVEL_END = None  # rising noise: NOISE_LEVEL in the first epoch to this in the last; None = fixed
+DAE_LOSS = "mse"  # the reconstruction loss: "mse" or "l1"
 DAE_DROPOUT = 0.0  # share of h zeroed before the decoder, in training
 DAE_AUGMENT = "flip"  # the DAE's training images (augmentations.AUGMENTS)
 DAE_OPTIMIZER = "adamw"  # model.OPTIMIZERS

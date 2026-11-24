@@ -141,12 +141,14 @@ class DenoisingAutoEncoder(pl.LightningModule):
     channels, activation: of the encoder (build_encoder); the light decoder mirrors them.
     dropout: share of h zeroed before the decoder, in training only. optimizer: OPTIMIZERS;
     scheduler "cosine": the lr decays to 0 over the run (CosineAnnealingLR).
+    noise_level_end: rising noise, from noise_level in the first epoch to this in the last (None: fixed).
+    loss: "mse" or "l1", between the reconstruction and the clean image.
     """
 
     def __init__(self, learning_rate, latent_dim, noise_type, noise_level, weight_decay=0.0,
                  backbone="small", decoder="light", activation=None, channels=(32, 64), dropout=0.0,
                  optimizer="adamw", scheduler="none", patch_size=8,
-                 noise_type2="none", noise_level2=0.0):
+                 noise_type2="none", noise_level2=0.0, noise_level_end=None, loss="mse"):
         super().__init__()
         self.save_hyperparameters()  # the arguments -> self.hparams
         # Black (pixel 0) and white (pixel 1) after normalization, for salt_pepper
@@ -158,7 +160,7 @@ class DenoisingAutoEncoder(pl.LightningModule):
         self.encoder = build_encoder(latent_dim, backbone, activation, channels)
         self.dropout = nn.Dropout(dropout)  # no weights: the encoder file stays the same
         self.decoder = build_decoder(latent_dim, decoder, channels, activation)
-        self.loss_fn = nn.MSELoss()
+        self.loss_fn = nn.L1Loss() if loss == "l1" else nn.MSELoss()
 
     def forward(self, x):
         h = self.encoder(x)     # [B, 3, 64, 64] -> [B, latent_dim]
@@ -167,10 +169,18 @@ class DenoisingAutoEncoder(pl.LightningModule):
     def add_noise(self, x, generator=None):
         """Corrupt the normalized images x [B, 3, 64, 64]: the noise, then the second noise if any.
         generator=None: new noise every call (training). Seeded: the same noise (val, test)."""
-        x = self._corrupt(x, self.hparams.noise_type, self.hparams.noise_level, generator)
+        x = self._corrupt(x, self.hparams.noise_type, self.noise_level(), generator)
         if self.hparams.noise_type2 != "none":
             x = self._corrupt(x, self.hparams.noise_type2, self.hparams.noise_level2, generator)  # stacked
         return x
+
+    def noise_level(self):
+        """noise_level, or with noise_level_end the level of this epoch: a straight line from the first to the last."""
+        end = self.hparams.noise_level_end
+        if end is None or self._trainer is None:
+            return self.hparams.noise_level
+        progress = min(self.current_epoch / max(self.trainer.max_epochs - 1, 1), 1.0)
+        return self.hparams.noise_level + (end - self.hparams.noise_level) * progress
 
     def _corrupt(self, x, noise_type, noise_level, generator):
         """One noise of NOISE_TYPES at noise_level."""
