@@ -1,8 +1,10 @@
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, Callback, TQDMProgressBar
 from pytorch_lightning.callbacks.progress.tqdm_progress import Tqdm
 
+from torchmetrics.functional import accuracy
+
 import config
-from knn import knn_evaluate
+from knn import extract_features, knn_scores
 
 
 class ColabProgressBar(TQDMProgressBar):
@@ -67,7 +69,9 @@ class ConfusionMatrixCallback(Callback):
 
 class KNNCallback(Callback):
     """k-NN accuracy of the encoder's h: val_knn_* after every validation, test_knn_* after the test.
-    ModelCheckpoint watches val_knn_top1, so the DAE is selected by k-NN, not by reconstruction."""
+    ModelCheckpoint watches val_knn_top1, so the DAE is selected by k-NN, not by reconstruction.
+    On the kept checkpoint (trainer.validate and trainer.test after the fit) also the macro
+    precision, recall, F1 and AUROC of the vote, so they reach results.json with the rest."""
 
     def __init__(self, k=None, bank_size=None):
         super().__init__()
@@ -79,11 +83,18 @@ class KNNCallback(Callback):
 
     def _log_knn(self, trainer, pl_module, splits):
         # One bank for all the splits. The per-epoch test k-NN is logged as testcurve_knn_*.
-        results = knn_evaluate(pl_module.encoder, trainer.datamodule, self.k, splits, self.bank_size)
-        for split, (top1, top5) in results.items():
+        from analysis import knn_metrics
+        dm, n = trainer.datamodule, trainer.datamodule.num_classes
+        bank_h, bank_y = extract_features(pl_module.encoder, dm.bank_dataloader(self.bank_size))
+        for split in splits:
+            h, y = extract_features(pl_module.encoder, dm.split_dataloader(split, persistent=False))
+            scores = knn_scores(bank_h, bank_y, h, n, self.k)  # [N, num_classes], the weighted votes
             name = "testcurve" if split == "test" and trainer.state.fn == "fit" else split
-            pl_module.log(f"{name}_knn_top1", top1, add_dataloader_idx=False)
-            pl_module.log(f"{name}_knn_top5", top5, add_dataloader_idx=False)
+            metrics = {f"{name}_knn_top1": accuracy(scores, y, task="multiclass", num_classes=n, top_k=1),
+                       f"{name}_knn_top5": accuracy(scores, y, task="multiclass", num_classes=n, top_k=5)}
+            if trainer.state.fn != "fit":  # the kept checkpoint: the class metrics too
+                metrics.update(knn_metrics(scores, y, n, prefix=f"{name}_knn_"))
+            pl_module.log_dict(metrics, add_dataloader_idx=False)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.sanity_checking:  # the 2 check batches before training
