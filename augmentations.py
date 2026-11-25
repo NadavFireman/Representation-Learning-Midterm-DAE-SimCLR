@@ -21,10 +21,8 @@ AUGMENTS = {
 
 
 def build_transforms(image_size=64, augment="flip"):
-    """Train and eval transforms. Every image leaves as image_size x image_size, normalized
-    with the Tiny-ImageNet values (the transfer set too). Train adds AUGMENTS[augment]
-    (the DAE: a horizontal flip). The DAE noise is added in the model, because its loss
-    needs the clean image."""
+    """Train and eval transforms: image_size x image_size, normalized with the Tiny-ImageNet
+    values. Train adds AUGMENTS[augment]. The DAE noise is added in the model, not here."""
     resize = [
         v2.ToImage(),
         v2.ToDtype(torch.float32, scale=True),  # uint8 [0, 255] -> float [0, 1]

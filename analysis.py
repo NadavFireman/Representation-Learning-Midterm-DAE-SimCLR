@@ -25,8 +25,7 @@ import config
 from augmentations import TINY_IMAGENET_MEAN, TINY_IMAGENET_STD
 from knn import extract_features, knn_scores
 
-# The robustness test (A4 bonus): the bank stays clean, the test images are corrupted
-# with corruptions the DAE did not train on, each at 3 severities.
+# The robustness test (A4 bonus): a clean bank, test images corrupted at 3 severities.
 # gaussian_noise: std; blur: sigma in pixels; occlusion: side of a gray square, as a fraction of 64.
 CORRUPTIONS = {
     "gaussian_noise": (0.25, 0.5, 1.0),

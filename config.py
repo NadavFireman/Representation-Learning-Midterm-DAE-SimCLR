@@ -5,7 +5,7 @@ LEARNING_RATE = 0.001
 BATCH_SIZE = 256  # linear_probe, finetune and the supervised encoder
 DAE_BATCH_SIZE = 512  # pretrain (the DAE)
 WEIGHT_DECAY = 0.01  # AdamW weight decay of the DAE
-NUM_EPOCHS = 12  # the DAE only, no early stopping: its checkpoint is chosen by val k-NN
+NUM_EPOCHS = 20  # the DAE only, no early stopping: its checkpoint is chosen by val k-NN
 SWEEP_NUM_EPOCHS = 10  # proxy setting of a search trial (--search)
 DATA_FRACTION = 1.0  # --data_fraction: the share of the training images the DAE trains on (class-balanced)
 LATENT_DIM = 256  # length of h
@@ -16,7 +16,7 @@ NOISE_TYPE2 = "none"  # a second noise on top of the first; "none" = only one
 NOISE_LEVEL2 = 0.0
 NOISE_LEVEL_END = None  # rising noise: NOISE_LEVEL in the first epoch to this in the last; None = fixed
 DAE_LOSS = "mse"  # the reconstruction loss: "mse" or "l1"
-DAE_DROPOUT = 0.0  # share of h zeroed before the decoder, in training
+DAE_DROPOUT = 0.4  # share of h zeroed before the decoder, in training
 DAE_AUGMENT = "flip"  # the DAE's training images (augmentations.AUGMENTS)
 DAE_OPTIMIZER = "adamw"  # model.OPTIMIZERS
 DAE_SCHEDULER = "none"  # "none" or "cosine"
@@ -25,8 +25,7 @@ BACKBONE = "small"  # the encoder: "small" (the course encoder) or "resnet18"
 CHANNELS = (32, 64)  # the output channels of the small encoder's two conv layers (--channels)
 DECODER = "light"  # the DAE decoder: "light" or "resnet18" (inverted ResNet-18)
 
-# The grid of the A2 search (train.py --search, one trial per call).
-# Each trial adds one row to sweep_results.csv; the best is chosen by val k-NN.
+# The grid of the A2 search (train.py --search, one trial per call); the best by val k-NN
 SWEEP = {
     "noise_type": ["gaussian", "mask", "salt_pepper"],
     "noise_level": [0.25, 0.5, 0.75],
@@ -49,9 +48,7 @@ SEED = 42  # data seed: the val split and the label subsets, the same for every 
 TRAIN_SEED = 42  # training seed: initialization, data order, noise (--seed)
 SEARCH = False  # set by --search
 RUN_TAG = "final"  # in every run folder name, after the model: these runs against the earlier ones
-# Runs that train also score the test set after every epoch (epoch/test_*), to plot only.
-# Only val chooses the checkpoint and stops the run.
-TEST_CURVE = True
+TEST_CURVE = True  # also score test after every epoch, to plot only; val alone chooses the checkpoint
 
 # Compute related
 ACCELERATOR = "auto"  # GPU on Colab
@@ -65,24 +62,23 @@ MODEL_NAME = "pretrain"
 
 DATASET = "TinyImageNet"  # set by --dataset; CIFAR100 is the transfer set
 LABEL_FRACTION = 1.0  # class-balanced part of train: 1.0, 0.1 or 0.01
-# The classifiers count in rounds: one round is as many training images as 100% of the labels
-# (90,000), so 1% validates every 100 epochs and 10% every 10: every label fraction gets the
-# same training budget and the same patience. TARGET_NUM_EPOCHS is the cap in rounds (--max_rounds).
-TARGET_NUM_EPOCHS = 100
-# The classifiers stop on and keep their best val_accuracy
-PATIENCE = 5  # rounds without a better val_accuracy before stopping
+# The classifiers count in rounds: a round is 90,000 training images (1% of the labels: 100 epochs)
+TARGET_NUM_EPOCHS = 100  # the cap in rounds (--max_rounds)
+PATIENCE = 5  # rounds without a better val_accuracy before stopping; the best one is kept
+# The classifier hyperparameters; these values are the linear probe's
 LABEL_SMOOTHING = 0.1  # 0.9 on the true class, 0.1 spread over all classes
-FINETUNE_LEARNING_RATE = 0.0001  # smaller lr, so we don't destroy the pretrained features
-# The classifier hyperparameters that the tuning notebook searches (colab_tuning.ipynb)
-CLASSIFIER_LR = None  # --lr: None = FINETUNE_LEARNING_RATE for finetune, LEARNING_RATE for the others
+CLASSIFIER_LR = None  # --lr: None = LEARNING_RATE
 HEAD_LR_MULT = 1.0  # --head_lr_mult: the head's lr is this times the encoder's
 CLASSIFIER_WD = 0.0  # --wd: AdamW weight decay of the classifiers (0 = Adam)
 DROPOUT = 0.0  # --dropout: share of h zeroed before the head, in training
 AUGMENT = "flip"  # --augment: the training images of a classifier (augmentations.AUGMENTS)
 OPTIMIZER = "adamw"  # --optimizer of the classifiers (model.OPTIMIZERS)
+# The modes that train the encoder with labels use the recipe tuned on val instead
+TUNED_MODES = ("finetune", "pretrain_supervise_encoder")
+TUNED = {"CLASSIFIER_LR": 0.003, "CLASSIFIER_WD": 1e-05, "DROPOUT": 0.5, "AUGMENT": "crop_jitter",
+         "LABEL_SMOOTHING": 0.0, "OPTIMIZER": "sgd"}
+FINETUNE_HEAD_LR_MULT = 3.0  # finetune only: the new head's lr is 3 times the loaded encoder's
 ACTIVATION = None  # --activation of the encoder (model.ACTIVATIONS); None: the backbone's own
 TUNE = False  # --tune: a tuning run: val only, no test
-# Partial fine-tuning (ResNet-18, --finetune_from): the first layer that trains.
-# "layer3" trains layer3, layer4, fc and the head. None = the whole encoder trains.
-FINETUNE_FROM = None
+FINETUNE_FROM = None  # --finetune_from (ResNet-18): the first layer that trains; None = all of them
 ENCODER_PATH = None  # set by utils.parse_args (None = random-init encoder)

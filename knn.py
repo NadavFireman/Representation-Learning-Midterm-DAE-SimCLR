@@ -24,8 +24,7 @@ def knn_scores(train_h, train_y, query_h, num_classes, k=20, chunk=500):
     """Similarity-weighted k-NN vote: one score per class for every query, [N_query, num_classes].
 
     The assignment's protocol: cosine similarity on L2-normalized h, k = 20, and each
-    neighbor adds its similarity to the score of its own class.
-    The queries go in chunks, so the [chunk, N_train] similarity matrix stays small.
+    neighbor adds its similarity to the score of its own class. The queries go in chunks.
     """
     train_h, query_h = F.normalize(train_h, dim=1), F.normalize(query_h, dim=1)  # length 1: dot product = cosine
     scores = []

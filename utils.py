@@ -8,29 +8,21 @@ from datamodule import NUM_CLASSES
 from model import (ACTIVATIONS, BACKBONES, DECODERS, NOISE_TYPES, OPTIMIZERS, SCHEDULERS, DenoisingAutoEncoder,
                    EncoderClassifier, SupervisedEncoder)
 
-# --mode, one of:
-# pretrain: DenoisingAutoEncoder (--noise_level 0 = the plain AE baseline).
-# pretrain_supervise_encoder: SupervisedEncoder, the same encoder trained with labels.
-# linear_probe, finetune: EncoderClassifier on a saved encoder.
-# knn, analysis: no training, evaluation of a saved encoder's h.
-MODES = (
-    "pretrain",
-    "pretrain_supervise_encoder",
-    "linear_probe",
-    "finetune",
-    "knn",
-    "analysis",
+MODES = (  # --mode
+    "pretrain",  # the DAE (--noise_level 0 = the plain AE)
+    "pretrain_supervise_encoder",  # the same encoder trained with labels
+    "linear_probe",  # a new head on a frozen saved encoder
+    "finetune",  # the same, and the encoder trains too
+    "knn",  # no training: k-NN on a saved encoder's h
+    "analysis",  # no training: the A4 and A5 evidence
 )
 DATASETS = {"tinyimagenet": "TinyImageNet", "cifar100": "CIFAR100"}
-# --encoder, the encoder the evaluation modes load:
-# dae / supervised: the file pretrain / pretrain_supervise_encoder saved with the same settings.
-# random: no file, a random-init encoder (baseline).
+# --encoder: the file pretrain (dae) or pretrain_supervise_encoder (supervised) saved; random: no file
 ENCODERS = ("dae", "supervised", "random")
 
 
 def architecture_tag(encoder):
-    """The architecture part of a file name: empty for the defaults (small encoder, light
-    decoder), otherwise "_resnet18", and "_resnet18dec" for a DAE with the ResNet-18 decoder."""
+    """The architecture part of a file name: "" for CNN-3, else "_resnet18" (and "_resnet18dec")."""
     tag = "" if config.BACKBONE == "small" else f"_{config.BACKBONE}"
     if encoder == "dae" and config.DECODER != "light":
         tag += f"_{config.DECODER}dec"
@@ -38,9 +30,8 @@ def architecture_tag(encoder):
 
 
 def encoder_path(encoder, pretrain_dataset, writing=False):
-    """File name of a saved encoder: its dataset, hyperparameters, architecture and seed,
-    so no run overwrites another's encoder. A search trial gets "_search".
-    writing: the run trains this encoder (pretrain); a DAE tuning trial also lists its training settings."""
+    """File name of a saved encoder: its dataset, hyperparameters, architecture and seed.
+    writing: this run trains it; a DAE search or tuning trial also lists its training settings."""
     if encoder == "random":
         return None
     if encoder == "supervised":
@@ -132,15 +123,14 @@ def parse_args():
         help="finetune with --backbone resnet18 only: partial fine-tuning. The encoder layers before "
         "this one stay frozen; it and the layers after it train with the head (e.g. layer3: layer3, layer4, fc).",
     )
-    # The training hyperparameters: of the classifiers (linear_probe, finetune, pretrain_supervise_encoder),
-    # or of the DAE with --mode pretrain. None: config.py's value for that model.
+    # The training hyperparameters, of the DAE in pretrain and of the classifier otherwise. None: config.py's value
     parser.add_argument("--lr", type=float, default=None, help="Learning rate. Default: config.")
-    parser.add_argument("--head_lr_mult", type=float, default=config.HEAD_LR_MULT, help="The head's lr / the encoder's.")
+    parser.add_argument("--head_lr_mult", type=float, default=None, help="The head's lr / the encoder's.")
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--wd", type=float, default=None, help="Weight decay.")
     parser.add_argument("--dropout", type=float, default=None, help="Share of h zeroed before the head (the DAE: the decoder).")
     parser.add_argument("--augment", choices=tuple(AUGMENTS), default=None)
-    parser.add_argument("--label_smoothing", type=float, default=config.LABEL_SMOOTHING)
+    parser.add_argument("--label_smoothing", type=float, default=None)
     parser.add_argument("--optimizer", choices=tuple(OPTIMIZERS), default=None)
     parser.add_argument("--activation", choices=tuple(ACTIVATIONS), default=config.ACTIVATION,
                         help="The encoder's activation. The modes that load an encoder need the one it trained with.")
@@ -192,11 +182,16 @@ def parse_args():
     names = (("LEARNING_RATE", "DAE_BATCH_SIZE", "WEIGHT_DECAY", "DAE_DROPOUT", "DAE_AUGMENT", "DAE_OPTIMIZER")
              if args.mode == "pretrain" else
              ("CLASSIFIER_LR", "BATCH_SIZE", "CLASSIFIER_WD", "DROPOUT", "AUGMENT", "OPTIMIZER"))
-    for name, value in zip(names, (args.lr, args.batch_size, args.wd, args.dropout, args.augment, args.optimizer)):
+    flags = dict(zip(names, (args.lr, args.batch_size, args.wd, args.dropout, args.augment, args.optimizer)),
+                 HEAD_LR_MULT=args.head_lr_mult, LABEL_SMOOTHING=args.label_smoothing)
+    # No flag: config.py's value, which is the tuned recipe for the modes that train the encoder with labels
+    tuned = dict(config.TUNED) if args.mode in config.TUNED_MODES else {}
+    if args.mode == "finetune":
+        tuned["HEAD_LR_MULT"] = config.FINETUNE_HEAD_LR_MULT
+    for name, value in flags.items():
+        value = tuned.get(name) if value is None else value
         if value is not None:
             setattr(config, name, value)
-    config.HEAD_LR_MULT = args.head_lr_mult
-    config.LABEL_SMOOTHING = args.label_smoothing
     config.ACTIVATION = args.activation
     config.TARGET_NUM_EPOCHS = args.max_rounds
     config.PATIENCE = args.patience
@@ -257,7 +252,7 @@ def build_model(mode):
 
     # linear_probe, finetune, knn and analysis: the saved (or random) encoder + a new head.
     return EncoderClassifier(
-        learning_rate=config.CLASSIFIER_LR or (config.FINETUNE_LEARNING_RATE if mode == "finetune" else config.LEARNING_RATE),
+        learning_rate=config.CLASSIFIER_LR or config.LEARNING_RATE,
         dropout=config.DROPOUT,
         weight_decay=config.CLASSIFIER_WD,
         head_lr_mult=config.HEAD_LR_MULT,

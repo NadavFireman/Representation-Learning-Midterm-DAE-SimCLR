@@ -26,9 +26,8 @@ class MyPrintingCallback(Callback):
 
 
 class EpochMetricsCallback(Callback):
-    """Logs one point per validation under "epoch/...", with the round (config.TARGET_NUM_EPOCHS)
-    as the x-axis, so runs with different numbers of steps line up. The test curve
-    (testcurve_*) goes under "epoch/test_..."."""
+    """Logs one point per validation under "epoch/...", with the round as the x-axis, so runs
+    with different numbers of steps line up. The test curve goes under "epoch/test_..."."""
 
     METRICS = ["loss", "accuracy", "top5_accuracy", "precision", "recall", "f1", "auroc", "calibration_error",
                "knn_top1", "knn_top5"]
@@ -70,8 +69,7 @@ class ConfusionMatrixCallback(Callback):
 class KNNCallback(Callback):
     """k-NN accuracy of the encoder's h: val_knn_* after every validation, test_knn_* after the test.
     ModelCheckpoint watches val_knn_top1, so the DAE is selected by k-NN, not by reconstruction.
-    On the kept checkpoint (trainer.validate and trainer.test after the fit) also the macro
-    precision, recall, F1 and AUROC of the vote, so they reach results.json with the rest."""
+    On the kept checkpoint also the macro precision, recall, F1 and AUROC of the vote."""
 
     def __init__(self, k=None, bank_size=None):
         super().__init__()

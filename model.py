@@ -9,7 +9,7 @@ from augmentations import TINY_IMAGENET_MEAN, TINY_IMAGENET_STD
 
 BACKBONES = ("small", "resnet18")  # --backbone: the encoder of every model
 DECODERS = ("light", "resnet18")  # --decoder: the decoder of the DAE
-# --activation of the encoder; None: the backbone's own (CNN-3: GELU, chosen by the search; ResNet-18: ReLU)
+# --activation of the encoder; None: the backbone's own (CNN-3: GELU, ResNet-18: ReLU)
 ACTIVATIONS = {"relu": nn.ReLU, "leaky_relu": nn.LeakyReLU, "gelu": nn.GELU, "silu": nn.SiLU, "mish": nn.Mish}
 # --optimizer of the classifiers. SGD with Nesterov momentum; the others are Adam variants.
 OPTIMIZERS = {"adamw": optim.AdamW, "adam": optim.Adam, "nadam": optim.NAdam, "radam": optim.RAdam,
@@ -22,10 +22,8 @@ SCHEDULERS = ("none", "cosine")  # --scheduler of the DAE
 def build_encoder(latent_dim, backbone="small", activation=None, channels=(32, 64)):
     """The encoder f_theta: [B, 3, 64, 64] -> h [B, latent_dim].
 
-    "small": the encoder of the lec4 SimCLR class (the assignment's backbone), for 3x64x64
-    images. GELU instead of ReLU: chosen by the search. channels: the output channels of its
-    two conv layers. "resnet18": build_resnet18_encoder.
-    activation: one of ACTIVATIONS in place of the backbone's own.
+    "small": the encoder of the lec4 SimCLR class, with GELU (chosen by the search);
+    channels: of its two conv layers. "resnet18": build_resnet18_encoder.
     """
     if backbone == "resnet18":
         encoder = build_resnet18_encoder(latent_dim)
@@ -56,9 +54,8 @@ def swap_activation(module, act):
 def build_resnet18_encoder(latent_dim):
     """ResNet-18 as the encoder: [B, 3, 64, 64] -> h [B, latent_dim].
 
-    torchvision's model with random weights (ImageNet weights have seen Tiny-ImageNet).
-    For 64x64 images: conv1 is 3x3 stride 1 and maxpool is removed, so the last feature
-    map is 8x8 and not 2x2; fc gives h, the same length as with the small encoder.
+    torchvision's model, random weights. For 64x64 images: conv1 is 3x3 stride 1 and no
+    maxpool, so the last feature map is 8x8 and not 2x2; fc gives h.
     """
     encoder = torchvision.models.resnet18(weights=None, num_classes=latent_dim)  # fc: [B, 512] -> [B, latent_dim]
     encoder.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)  # [B, 3, 64, 64] -> [B, 64, 64, 64]
@@ -71,8 +68,8 @@ def build_resnet18_encoder(latent_dim):
 def build_decoder(latent_dim, decoder="light", channels=(32, 64), activation=None):
     """The decoder g_phi: h [B, latent_dim] -> [B, 3, 64, 64].
 
-    "light": the mirror of the small encoder (same channels and activation), as in the course
-    AutoEncoder. No activation on the last layer: the target is normalized. "resnet18": build_resnet18_decoder.
+    "light": the mirror of the small encoder, as in the course AutoEncoder. No activation on
+    the last layer: the target is normalized. "resnet18": build_resnet18_decoder.
     """
     if decoder == "resnet18":
         return build_resnet18_decoder(latent_dim)
@@ -127,22 +124,16 @@ def build_resnet18_decoder(latent_dim):
 class DenoisingAutoEncoder(pl.LightningModule):
     """Denoising autoencoder: corrupted image in, clean image out.
 
-    The course AutoEncoder (lec5) with a corrupted input: the loss is MSE between the
-    reconstruction and the clean image. noise_type:
+    The course AutoEncoder (lec5) with a corrupted input; the loss compares the
+    reconstruction with the clean image. noise_type:
         "gaussian":    x + noise_level * N(0, 1)
         "mask":        a noise_level fraction of the pixels is set to 0 (the mean color)
         "salt_pepper": a noise_level fraction of the pixels is set to black or white
-        "patch_mask":  a noise_level fraction of the patch_size x patch_size patches is set to 0 (MAE)
+        "patch_mask":  a noise_level fraction of the patches is set to 0 (MAE)
         "block":       one random square, noise_level of the image, is set to 0 (context encoder)
     noise_level=0 is the plain autoencoder (the AE baseline).
-    noise_type2, noise_level2: a second noise added on top of the first ("none": no second noise).
-    In val and test the noise of batch i comes from seed i, so every epoch is scored
-    on the same corrupted images.
-    channels, activation: of the encoder (build_encoder); the light decoder mirrors them.
-    dropout: share of h zeroed before the decoder, in training only. optimizer: OPTIMIZERS;
-    scheduler "cosine": the lr decays to 0 over the run (CosineAnnealingLR).
-    noise_level_end: rising noise, from noise_level in the first epoch to this in the last (None: fixed).
-    loss: "mse" or "l1", between the reconstruction and the clean image.
+    In val and test the noise of batch i comes from seed i: the same corrupted images every epoch.
+    dropout: share of h zeroed before the decoder, in training only.
     """
 
     def __init__(self, learning_rate, latent_dim, noise_type, noise_level, weight_decay=0.0,
@@ -167,8 +158,7 @@ class DenoisingAutoEncoder(pl.LightningModule):
         return self.decoder(self.dropout(h))  # [B, latent_dim] -> [B, 3, 64, 64]
 
     def add_noise(self, x, generator=None):
-        """Corrupt the normalized images x [B, 3, 64, 64]: the noise, then the second noise if any.
-        generator=None: new noise every call (training). Seeded: the same noise (val, test)."""
+        """Corrupt the normalized images x [B, 3, 64, 64]. generator=None: new noise every call (training)."""
         x = self._corrupt(x, self.hparams.noise_type, self.noise_level(), generator)
         if self.hparams.noise_type2 != "none":
             x = self._corrupt(x, self.hparams.noise_type2, self.hparams.noise_level2, generator)  # stacked
@@ -268,9 +258,8 @@ class EncoderClassifier(pl.LightningModule):
     encoder_path: the state_dict saved after pretraining (None = random-init baseline).
     freeze_encoder=True trains only the head (linear probe); False trains everything.
     finetune_from (ResNet-18, e.g. "layer3"): the encoder layers before it stay frozen.
-    dropout: the share of h zeroed in training, before the head (nn.Dropout; off in val and test).
-    weight_decay, head_lr_mult, optimizer: the optimizer (OPTIMIZERS), its weight decay, and the
-    head's lr as a multiple of the encoder's. activation: of the encoder (ACTIVATIONS), None: its own.
+    dropout: the share of h zeroed before the head, in training only.
+    head_lr_mult: the head's lr as a multiple of the encoder's.
     """
 
     def __init__(self, learning_rate, num_classes, latent_dim, encoder_path=None, freeze_encoder=False,
@@ -309,8 +298,7 @@ class EncoderClassifier(pl.LightningModule):
         # label_smoothing: the target puts 1 - label_smoothing on the true class.
         self.loss_fn = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
-        # The metrics: top-1 and top-5 accuracy (the assignment), and macro precision,
-        # recall, F1 and AUROC (one value per class, then their mean).
+        # Top-1 and top-5 accuracy (the assignment), and macro precision, recall, F1 and AUROC
         metrics = torchmetrics.MetricCollection({
             # average="micro": correct images / all images
             "accuracy": torchmetrics.classification.MulticlassAccuracy(num_classes, average="micro"),
@@ -353,9 +341,7 @@ class EncoderClassifier(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         loss, scores, y = self._common_step(batch, batch_idx)
-        # dataloader_idx 1 is the test set, for the test curve only.
-        # float(): with 16-mixed the scores are float16, too coarse for AUROC.
-        # add_dataloader_idx=False keeps the names EarlyStopping and ModelCheckpoint watch.
+        # dataloader_idx 1 is the test set (the test curve). float(): float16 is too coarse for AUROC
         split, metrics, prog_bar = ("testcurve", self.testcurve_metrics, False) if dataloader_idx == 1 else ("val", self.val_metrics, True)
         metrics.update(scores.float(), y)
         self.log(f"{split}_loss", loss, on_step=False, on_epoch=True, prog_bar=prog_bar, add_dataloader_idx=False)
@@ -387,8 +373,7 @@ class EncoderClassifier(pl.LightningModule):
 
 
 class SupervisedEncoder(EncoderClassifier):
-    """The same encoder and head, trained from scratch with labels (supervised baseline):
-    EncoderClassifier with no loaded weights and nothing frozen.
+    """The supervised baseline: EncoderClassifier with no loaded weights and nothing frozen.
     **ignored takes the hyperparameters load_from_checkpoint passes back."""
 
     def __init__(self, learning_rate, num_classes, latent_dim, backbone="small", label_smoothing=0.0, dropout=0.0,

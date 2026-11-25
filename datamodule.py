@@ -30,14 +30,12 @@ class TinyImageNetSplit(Dataset):
 class ImageDataModule(pl.LightningDataModule):
     """Tiny-ImageNet (pretraining and evaluation) or CIFAR-100 (transfer).
 
-    Splits, as the assignment asks:
+    Splits, as the assignment asks (one fixed seed, the same images for every model):
         train: the training images minus the held-out ones (Tiny-ImageNet: 90,000)
         val:   n_val_per_class training images per class (10,000), for tuning and model selection
         test:  the official labeled val set (10,000), only for the final numbers
     label_fraction keeps a class-balanced part of train (1.0, 0.1 or 0.01).
-    The splits use one fixed seed, so every model gets the same images.
-    test_curve=True: val_dataloader returns two loaders, val and test, so the model also
-    logs the test numbers after every epoch (testcurve_*), to plot only.
+    test_curve=True: val_dataloader also returns the test loader, for the test curve (plots only).
     """
 
     def __init__(self, data_dir, batch_size, num_workers, dataset_name="TinyImageNet",

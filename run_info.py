@@ -1,7 +1,7 @@
-"""The run folder name, date<DDMMYYYY>_time<HHMMSS>_<model>_<tag>_<stage>_<what>_<hyperparameters>_seed<seed>, and run_info.txt.
+"""The run folder name and run_info.txt.
 
-The date and time are those of the run's first start. A run that continues after a
-disconnect finds its folder by the part after them.
+date<DDMMYYYY>_time<HHMMSS>_<model>_<tag>_<stage>_<what>_<hyperparameters>_seed<seed>: the date and
+time of the first start. A run that continues after a disconnect finds its folder by the rest.
 """
 import os
 import re
@@ -14,7 +14,7 @@ TZ = ZoneInfo("Asia/Jerusalem")
 STAGE = {"pretrain": "pretrain", "pretrain_supervise_encoder": "supervised", "knn": "knn",
          "linear_probe": "linear_probe", "finetune": "finetune", "analysis": "analysis"}
 PERCENT = {0.01: "1pct", 0.1: "10pct", 1.0: "100pct"}
-# The DAE settings as config.py has them, before the flags change them: a name lists the ones that differ
+# The DAE settings of config.py, before the flags: a name lists the ones that differ
 DAE_ARCHITECTURE = ("CHANNELS", "ACTIVATION", "PATCH_SIZE")
 DAE_TRAINING = ("LEARNING_RATE", "DAE_BATCH_SIZE", "WEIGHT_DECAY", "DAE_OPTIMIZER", "DAE_DROPOUT", "DAE_AUGMENT",
                 "DAE_SCHEDULER", "NOISE_LEVEL_END", "DAE_LOSS", "DATA_FRACTION", "NUM_EPOCHS")
@@ -107,7 +107,7 @@ def settings(mode, model):
                   f"decoder {config.DECODER}", f"noise {noise}", f"loss {config.DAE_LOSS}", f"dropout on h {config.DAE_DROPOUT}",
                   f"augment {config.DAE_AUGMENT}", f"{config.DAE_OPTIMIZER} lr {config.LEARNING_RATE}, weight decay {config.WEIGHT_DECAY}",
                   f"scheduler {config.DAE_SCHEDULER}", f"batch {config.DAE_BATCH_SIZE}",
-                  f"{config.DATA_FRACTION:g} of the training images", f"{epochs} epochs, checkpoint: best val k-NN"]
+                  f"{config.DATA_FRACTION:.0%} of the training images", f"{epochs} epochs, checkpoint: best val k-NN"]
     elif mode in ("knn", "analysis"):
         parts += [f"k-NN k={config.KNN_K}, no training"]
     else:
@@ -122,11 +122,11 @@ def settings(mode, model):
     return ", ".join(parts + [f"dataset {config.DATASET}", f"seed {config.TRAIN_SEED}"])
 
 
-def write(logger, mode, model, results, start, trainer=None, timer=None):
+def write(logger, mode, model, results, start, trainer=None, train_seconds=None):
     """run_info.txt in the run folder, and the same in TensorBoard's TEXT tab."""
     name = os.path.basename(logger.log_dir)
     started = datetime.strptime(name[4:23], "%d%m%Y_time%H%M%S").replace(tzinfo=TZ)
-    minutes = (timer.time_elapsed() if timer else (now() - start).total_seconds()) / 60
+    minutes = ((now() - start).total_seconds() if train_seconds is None else train_seconds) / 60
     epochs = "no training"
     if trainer is not None:
         best = [c for c in trainer.checkpoint_callbacks if c.monitor][0]

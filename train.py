@@ -20,8 +20,7 @@ def run(mode):
     """Train and evaluate one experiment. mode: config.MODEL_NAME, or --mode."""
     pl.seed_everything(config.TRAIN_SEED)  # same initialization and data order -> fair comparison
 
-    # One folder per run (run_info.py); a run cut off by a Colab disconnect
-    # finds the same folder and continues from its last.ckpt.
+    # One folder per run; after a Colab disconnect the run finds it and continues from last.ckpt
     run_name = run_info.folder_name(mode)
     logger = TensorBoardLogger(config.OUTPUT_DIR, name="", version=run_name, default_hp_metric=False)
 
@@ -33,7 +32,7 @@ def run(mode):
         print(f"{run_name} already finished; its results are in {results_file}")
         return results
     start = run_info.now()
-    done = {}  # the trainer and its Timer, for run_info.txt
+    done = {}  # the trainer and the training time, for run_info.txt
 
     def save_results(results):
         """Write the final numbers to results.json and run_info.txt, and return them."""
@@ -41,12 +40,12 @@ def run(mode):
         os.makedirs(logger.log_dir, exist_ok=True)
         with open(results_file, "w") as f:
             json.dump(results, f, indent=1)
-        run_info.write(logger, mode, model, results, start, done.get("trainer"), done.get("timer"))
+        run_info.write(logger, mode, model, results, start, done.get("trainer"), done.get("train_seconds"))
         return results
 
     model = build_model(mode)
 
-    # The DAE uses no labels and --data_fraction of the training images (all by default); the other modes use --label_fraction.
+    # The DAE trains on --data_fraction of the images, the other modes on --label_fraction
     label_fraction = config.DATA_FRACTION if mode == "pretrain" else config.LABEL_FRACTION
     if config.SEARCH:
         num_epochs = config.SWEEP_NUM_EPOCHS  # proxy setting for tuning
@@ -105,8 +104,7 @@ def run(mode):
         # Stop on and keep the best val_accuracy.
         callbacks.append(EarlyStopping(monitor="val_accuracy", mode="max", patience=config.PATIENCE))
         callbacks.append(ModelCheckpoint(dirpath=checkpoint_dir, monitor="val_accuracy", mode="max"))
-    # last.ckpt, rewritten every epoch, to continue after a disconnect. It comes
-    # second, so ckpt_path="best" below still means the monitored checkpoint.
+    # last.ckpt, to continue after a disconnect. Second, so ckpt_path="best" is the monitored one
     callbacks.append(ModelCheckpoint(dirpath=checkpoint_dir, filename="last", enable_version_counter=False,
                                      every_n_epochs=every))  # once per round, not every short epoch
 
@@ -125,7 +123,7 @@ def run(mode):
         log_every_n_steps=10,  # default is 50: short runs would get no step points
         callbacks=callbacks,
     )
-    done.update(trainer=trainer, timer=timer)
+    done["trainer"] = trainer
 
     print(model)
     print(f"Training mode is: {mode}, on {config.DATASET} for up to {num_epochs} rounds of {every} epochs, batch size {batch_size}, "
@@ -133,8 +131,8 @@ def run(mode):
 
     # ckpt_path="last": continue from this run's last.ckpt if it exists.
     trainer.fit(model, dm, ckpt_path="last")
-    # Validate the kept checkpoint. This also loads its weights into model. The test is left
-    # to trainer.test below (no test curve here, or it would run twice).
+    done["train_seconds"] = timer.time_elapsed()  # now: validate and test below reload the Timer's state
+    # Validate the kept checkpoint (this loads its weights). The test is left to trainer.test
     dm.test_curve = False
     val_results = trainer.validate(model, dm, ckpt_path="best")
 
