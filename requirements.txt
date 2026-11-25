@@ -5,3 +5,4 @@ matplotlib
 datasets
 scikit-learn
 pandas
+tzdata
