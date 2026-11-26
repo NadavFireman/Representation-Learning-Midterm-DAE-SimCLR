@@ -18,10 +18,10 @@ with a GPU runtime (L4) and run all the cells. The notebook only clones the repo
 installs it, mounts Google Drive, starts TensorBoard and calls `train.py`, one call per run:
 47 runs, about 6 to 8 hours.
 
-Every output goes to the folder `midterm_final` on Drive. `DRIVE_DIR` in the Drive cell is
-the author's folder: it is created if it does not exist, or change it to your own. After a
-disconnect, run the cells again: a finished run (it has `results.json`) is skipped, and an
-unfinished one continues from its `last.ckpt`.
+Every output goes to the folder `RepL/Midterm/midterm_final` on your Drive (`DRIVE_DIR` in
+the Drive cell; it is created if it does not exist). After a disconnect, run the cells
+again: a finished run (it has `results.json`) is skipped, and an unfinished one continues
+from its `last.ckpt`.
 
 ### Locally
 
